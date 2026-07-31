@@ -39,19 +39,18 @@ All commit IDs below are verified exists in the local fork. **If upstream/master
 
 ## What still needs to be done
 
-- [ ] **RUNTIME validation with a real model** — nothing has been run against an actual GGUF model yet (no model file available in the repo). Must validate:
-  - `llama-bench` with turbo KV cache: `--cache-type-k q8_0 --cache-type-v turbo3 -ngl 99` (see §4)
-  - `llama-cli` decode with `--cache-type-k q8_0 --cache-type-v turbo3/4` on a dsv4 model
-  - DFlash speculative decoding path (`--spec draft-dflash`)
-- [ ] **`llama-quantize` CLI type table lacks named turbo/TQ entries** — `llama-quantize --help` shows only standard ftypes (no turbo2/3/4, no tq3_1s/tq4_1s). **NOTE (verified 2026-07-31): the underlying plumbing is COMPLETE** — `include/llama.h` has `LLAMA_FTYPE_MOSTLY_TQ3_1S = 43` / `MOSTLY_TQ4_1S = 44`, `src/llama-quant.cpp:834-835` maps ftype->ggml_type, `src/llama-model-loader.cpp:752-753` maps back. Only the named table in `tools/quantize/quantize.cpp` and `tools/llama-bench/llama-bench.cpp::ggml_type_from_name()` (has `turbo2/turbo3/turbo4`, missing `tq3_1s/tq4_1s`) lack entries. `llama-quantize --type 43/44` already works via the numeric fallback (`try_parse_ftype`).
+- [ ] **RUNTIME validation with a real model** — **PARTIALLY DONE (2026-07-31 evening):** turbo2/3/4 KV verified on Qwen3-8B-Q8_0 + Qwen3.5-9B-UD (bench + end-to-end llama-cli decode); DFlash speculative decoding verified (Qwen3.6-35B-A3B-DFlash draft + KAT-Coder-2.5-Dev-Q5_K_S main, turbo3 V, small ctx). Still pending: dsv4-family decode, DSpark draft run, perplexity, long-context runs.
+  - Bench results (Qwen3-8B-Q8_0, CUDA, after the cudart fix — see Bugs section): f16 pp=3574/tg=152, turbo2 pp=3546/tg=150, turbo3 pp=12110(!)/tg=157, turbo4 pp=3461/tg=147. Qwen3.5-9B: turbo3 pp=4144/tg=117, turbo4 pp=4172/tg=117.
+  - DFlash run: main 35B-A3B Q5_K_S (23G) + draft 402M, `--spec-type draft-dflash -ctv turbo3 -c 1024`, generated correctly, clean exit.
+- [x] **`llama-quantize` CLI type table + `llama-bench` parser — DONE (2026-07-31):** added `TQ3_1S`/`TQ4_1S` rows to `tools/quantize/quantize.cpp` (fork-exact rows, `--help` now lists them) and `tq3_1s`/`tq4_1s` to `llama-bench.cpp::ggml_type_from_name()`. Group 1 GAP closed.
 - [x] **DSPARK: RESTORED (2026-07-31)** — `deepseek4-dspark.cpp` exists in **no ref** in this repo (fork included); the earlier "MISSING" claim was incorrect. DSPARK is **upstream-merged code**: commit `84075273c` "spec: add DSpark speculative decoding (#25173)" (2026-07-28) is an ancestor of `upstream/master`. The fork itself has zero DSPARK, so the code exists here only as upstream code and is kept in this tree. All DSPARK code was **restored** from upstream across 13 files (see §7 Scope Decisions + Decision 4). Every file now matches upstream's `dspark` ref counts. `DGX-Spark` hardware support was never touched.
-- [ ] **`docs/KV-cache-quantization.md` is MISSING** from the merged tree (`docs/speculative.md` ✅ exists). Re-add or update user-facing KV-cache-quantization docs.
-- [ ] **`tests/test-turbo-quant.c` is MISSING** from the merged tree. Re-add or port the round-trip test (`fix: inverse WHT in test-turbo-quant.c round-trip (#59)`).
-- [x] **Commit the work — DONE (2026-07-31)** — tree is clean; all 170 previously-modified/untracked files were committed in 7 logical commits on `feature/turboquant-kv-cache-rebase` (see STATUS above for the list). Nothing remains uncommitted.
+- [x] **`docs/KV-cache-quantization.md` — ADDED (2026-07-31):** written fresh (neither fork nor upstream ever had it); documents turbo2/3/4 usage, TQ3_1S/TQ4_1S weight types, rotation/padding rules, env knobs. `docs/speculative.md` ✅ exists.
+- [x] **`tests/test-turbo-quant.c` — RE-ADDED (2026-07-31):** restored from fork tip (67 lines, incl. the #59 inverse-WHT round-trip fix) and registered via `llama_build_and_test(test-turbo-quant.c LABEL "turbo")` in `tests/CMakeLists.txt`. Passes: turbo3 basis-vector MSE=0/Cosine=1.0, turbo4 Cosine=0.9956.
+- [x] **Commit the work — DONE (2026-07-31)** — tree clean except the new validation-session fixes (see Bugs section; uncommitted, awaiting review).
 - [x] **`common/console.cpp` termios gating — VERIFIED survived (2026-07-31)** — POSIX init gated on `if (!simple_io)` at `common/console.cpp:135-151`, cleanup gated identically at `:159-166`; `tcgetattr`/`tcsetattr` only touch the terminal on the interactive path.
 - [ ] **Metal / Vulkan / SYCL runtime validation** — the ported code compiles for CUDA/CPU; Metal (`ggml-metal.metal` TurboFlash), Vulkan (turbo3/4 FA + SET_ROWS), and SYCL template-instance files are present (now tracked/committed) but were **not runtime-validated** on this Linux/CUDA host.
-- [ ] **Full `test-backend-ops` suite** — only a CPU subset was run. Run the complete suite (CPU + CUDA) to validate TQ3_1S/TQ4_1S kernels, SET_ROWS, and dsv4 KV ops.
-- [ ] **Baseline `f16` load check** — the §4 rule "f16 baseline must load cleanly before any turbo comparison" has not been executed.
+- [ ] **Full `test-backend-ops` suite** — CUDA SET_ROWS/SOFT_MAX run: 0 test cases match in the upstream matrix ("Skipping", matching the plan's note). Turbo kernels validated via real-model runs instead. Full CPU+CUDA suite still pending.
+- [ ] **Baseline `f16` load check** — done implicitly (f16 bench + f16 cli runs pass); explicit §4 protocol still pending.
 
 ## Verification audit (2026-07-31, post-commit) — plan vs committed tree
 
@@ -71,6 +70,18 @@ Re-verified the full plan against the committed tree (HEAD `7f05310b5`, tree cle
 
 **Post-rebase re-verification (2026-07-31 evening, HEAD `f987a49f8`):** token sweep re-run over the same 37 files — 0 missing fork tokens; the 5-target build passes on the new base (relink of `llama-context.cpp` consumers); `llama-server --version` = `10225 (f987a49f8)`. The conflict resolution in `src/llama-context.cpp` preserves both upstream `69e62fc77` behavior and the fork's turbo auto-enable (see STATUS re-rebase note).
 
+## Bugs found & fixed during validation (2026-07-31) — uncommitted, awaiting review
+
+1. **llama-cli EOF spin (upstream bug at base `876a4321`, fixed in `tools/cli/cli-context.cpp`).** New client-style cli (conversation mode) spins at ~1M `"> "` writes/sec on stdin EOF: the interactive loop does `if (buffer.empty()) continue;` with no EOF check. Reproduced on f16 AND turbo KV (not turbo-related); gdb showed `console::readline_advanced` + `cli_context::run()`. Fix: `if (buffer.empty()) { if (std::cin.eof() || feof(stdin)) { break; } continue; }`. Now `llama-cli ... </dev/null` generates and exits cleanly. (Both readline paths return false on EOF; the empty-buffer signal was being discarded.)
+2. **gguf-py/gguf/constants.py stacked-duplicate merge artifacts (fixed).** `import gguf` hard-crashed (duplicate `MODEL_TENSOR` members: `HC_HEAD_FN/BASE/SCALE`, `FFN_GATE_TID2EID`, `ATTN_COMPRESSOR_*`, plus a 10-member fork block stacked on upstream's identical members; duplicate `Keys` entries; shadowing `Keys.HyperConnection` class; duplicate `MODEL_ARCH_NAMES`/`TENSOR_NAMES`/`MODEL_TENSOR_SKIP` DEEPSEEK4 entries — the fork's generic DEEPSEEK4 skip was shadowing upstream's detailed one). All deduplicated keep-first/keep-upstream; fork's genuine additions (TQ types, DSPARK tensors, HC tensors) intact; `import gguf` now works (443 MODEL_TENSOR members). Same artifact class as §7 items 3-4 which only fixed `src/llama-arch.h`.
+3. **CUDA first-launch failures — root cause: build linked system cudart 12.4 with CUDA 13.3-compiled code (fixed at build level).** Symptoms: `CUDA error: invalid argument` from SOFT_MAX / mul_mat_q mm_ids_helper on the FIRST launch of a kernel after `CUDA_SET_SHARED_MEMORY_LIMIT`; DFlash runs crashed 100%, non-draft runs survived only because a later launch cleared the sticky error. Root cause: `cudaGetDeviceProperties` via cudart 12.4 + driver 595 (CUDA 13.2) returns garbage for `sharedMemPerBlockOptin`/`sharedMemPerMultiprocessor` (4294967297 vs correct 101376 via `cudaDeviceGetAttribute`) → the max-dynamic-shared attribute set to garbage poisons the next launch (invalidValue once). Fix: `cmake -B build -DCUDA_CUDART=/usr/local/cuda-13.3/targets/x86_64-linux/lib/libcudart.so -DCUDA_cudart_LIBRARY=...` (the stale `CUDA_CUDART` cache var pointed at `/usr/lib/x86_64-linux-gnu/libcudart.so` = 12.4; `linkLibs.rsp` carries the absolute path). After relink: `DT_NEEDED libcudart.so.13`. **Side effect: pp512 on Qwen3-8B jumped 3545 -> 12110 t/s** — the stale runtime was silently crippling CUDA (graph/launch fallbacks). **Hazard for fresh builds on this machine:** any clean reconfigure reverts to system cudart 12.4 unless the cache var is set; also `libcublas.so.12` (12.4) remains in use and is fine (talks to the driver directly).
+4. **`Qwen3.6-35B-A3B-UD-Q4_K_S-rot-kv.gguf` does not load (NOT a bug).** `expected 813 tensors, got 733` — the file carries 80 baked-in per-layer tensors `blk.N.attn_k_rot.weight` / `attn_v_rot.weight` (40 layers x 2) produced by an external rotation-experiment conversion pipeline. NO llama.cpp ref (fork or upstream) has tensor mappings for them. Used the compatible `Kwaipilot_KAT-Coder-V2.5-Dev-Q5_K_S.gguf` (same qwen35moe arch/vocab) as the DFlash main model instead.
+
+### Validation results (2026-07-31, all on RTX 5090 / CUDA)
+- Turbo KV: bench f16/turbo2/3/4 on Qwen3-8B (pp 3574/3546/12110/3461, tg 152/150/157/147 t/s), turbo3/4 on Qwen3.5-9B-UD (pp 4144/4172, tg 117). End-to-end llama-cli decode on turbo2/3/4 (after fix #1).
+- DFlash: `--spec-type draft-dflash` with Qwen3.6-35B-A3B-DFlash-Q8_0 draft + 35B-A3B Q5_K_S main, `-ctv turbo3 -c 1024 -n 24` — generated a correct answer, clean exit. (Crash before fix #3.)
+- test-turbo-quant: passes (see above). test-backend-ops CUDA SET_ROWS/SOFT_MAX: no matching cases in upstream matrix ("Skipping" by design).
+
 ## Decisions recorded during the merge (deliberate "reduce to minimum delta" choices)
 
 1. **`common/speculative.cpp`: kept upstream's `common_speculative_impl_draft_dflash`** (3-arg ctor with `type` param) and **dropped the fork's older copy** (with `StashedG`/`m_use_deferred` deferred-KV-injection fields). The merged `common/common.h` and the impl factory are upstream-driven. Whole-tree grep confirmed **zero** external references to the dropped `StashedG`/`m_use_deferred`/`MAX_STASH`. *(2026-07-31: the DSPARK factory case that uses the 3-arg ctor was restored — see §7 Scope Decisions; the `type` ctor param defaults to DFLASH except in the restored DSPARK factory case, kept for upstream parity.)*
@@ -84,7 +95,7 @@ Re-verified the full plan against the committed tree (HEAD `7f05310b5`, tree cle
 ## 1. Subsystem Grouping
 
 ### Group 1 — Quantizer Registration + Convertor
-**STATUS: ✅ COMPLETED (code merged), ⚠️ one verification gap (quantize CLI table)**
+**STATUS: ✅ COMPLETED (code merged; Group 1 GAP closed 2026-07-31 — CLI table rows + bench parser entries added)**
 
 The commits that add new `ggml_type` enum values and `llama-quantize` support.
 
@@ -93,7 +104,7 @@ The commits that add new `ggml_type` enum values and `llama-quantize` support.
 - [x] `6c9cfb1be` `experiment: split 2x4-entry constant LUT for M1 decode fix`
 - [x] `5e6277b6f` `fix: add turbo3/turbo4 cache types to llama-bench arg parser` — `turbo2/turbo3/turbo4` present in `tools/llama-bench/llama-bench.cpp:503-509`
 - [x] `f3f7c3c4b` `feat: InnerQ per-channel equalization + turbo2 64-group fallback`
-- [ ] **GAP (refined 2026-07-31):** `tq3_1s`/`tq4_1s` are NOT in `llama-bench.cpp::ggml_type_from_name()` and NOT in the `llama-quantize` CLI type table (`tools/quantize/quantize.cpp`). **Plumbing is complete** (see STATUS): `llama.h` ftype 43/44 + both mapping directions exist, and `--type 43/44` works via numeric fallback. Remaining work is two named-table rows (bench parser + quantize CLI list).
+- [x] **GAP CLOSED (2026-07-31):** added `tq3_1s`/`tq4_1s` to `llama-bench.cpp::ggml_type_from_name()` and `TQ3_1S`/`TQ4_1S` rows to the `tools/quantize/quantize.cpp` CLI table (fork-exact rows, `llama-quantize --help` now lists them).
 
 Rebuild verification:
 ```bash
@@ -326,7 +337,7 @@ These are behavioral toggles and runtime paths that must survive rebase even tho
 ---
 
 ### Group 11 — Server / Bench CLI / UI / Docs / CI Hygiene
-**STATUS: ⚠️ PARTIAL — server/bench items merged; fork ui commits NOT merged (HEAD `tools/ui/` == upstream, 2026-07-31); docs/KV-cache-quantization.md and tests/test-turbo-quant.c MISSING**
+**STATUS: ⚠️ PARTIAL — server/bench items merged; fork ui commits NOT merged (HEAD `tools/ui/` == upstream, 2026-07-31); docs/KV-cache-quantization.md + tests/test-turbo-quant.c ADDED 2026-07-31 (see §6)**
 
 Apply last; lowest conflict risk.
 
@@ -515,15 +526,15 @@ If a conflict affects the function signature, struct layout, or call graph of up
 | `src/models/dflash.cpp` + `models.h` | DFlash draft path | ✅ present |
 | `src/models/deepseek4-dspark.cpp` | DSPARK draft path | ✅ **RESTORED** (never existed in any ref; kept as upstream code in `dflash.cpp`, 2026-07-31) |
 | `common/speculative.cpp` | Draft-type enum plumbing | ✅ fixed this session |
-| `tools/quantize/quantize.cpp` | Convert/quant entry + calibration gate | ⚠️ named type table lacks TQ3_1S/TQ4_1S/turbo entries (ftype plumbing complete; numeric `--type 43/44` works) |
-| `tools/llama-bench/llama-bench.cpp` | `ggml_type_from_name()` token→enum | ⚠️ has turbo2/3/4, missing tq3_1s/tq4_1s |
+| `tools/quantize/quantize.cpp` | Convert/quant entry + calibration gate | ✅ TQ3_1S/TQ4_1S table rows added 2026-07-31 (`--help` lists them; `--type 43/44` numeric fallback also works) |
+| `tools/llama-bench/llama-bench.cpp` | `ggml_type_from_name()` token→enum | ✅ `tq3_1s`/`tq4_1s` added 2026-07-31 (had turbo2/3/4) |
 | `gguf-py/gguf/*.py` | DFlash tensor mappings + bonus-anchor keys | ✅ DSPARK mappings restored |
 | `conversion/qwen.py` / `conversion/__init__.py` | DSpark/DSPARK mappings | ✅ `DSparkModel`/`Qwen3DSparkModel` restored |
 | `common/console.cpp` | termios gating for non-TTY scripted runs | ✅ verified 2026-07-31 — POSIX block gated on `!simple_io` (`:135-151`, cleanup `:159-166`) |
-| `docs/KV-cache-quantization.md`, `docs/speculative.md` | User-facing instructions | ⚠️ KV-cache-quantization.md MISSING; speculative.md ✅ |
+| `docs/KV-cache-quantization.md`, `docs/speculative.md` | User-facing instructions | ✅ KV-cache-quantization.md ADDED 2026-07-31 (written fresh — existed in neither fork nor upstream); speculative.md ✅ |
 | `tools/ui/dist/*` | Prebuilt static assets | ⚠️ **not in tree (2026-07-31)** — gitignored in both fork and HEAD (`tools/ui/.gitignore:12`); produced at release-build time by `embed.cpp` (empty asset table fallback). Fork's ui source tweaks (Group 11) were NOT ported; HEAD `tools/ui/` == upstream. |
 | `.github/workflows/*` | TurboQuant+ release workflow | ✅ present |
-| `tests/test-turbo-quant.c` | WHT round-trip test | ❌ **MISSING** |
+| `tests/test-turbo-quant.c` | WHT round-trip test | ✅ RE-ADDED 2026-07-31 from fork tip + registered (`llama_build_and_test` LABEL "turbo"); passes |
 
 ---
 
@@ -564,6 +575,8 @@ If a conflict affects the function signature, struct layout, or call graph of up
 ## 8. Risks
 
 - **Validation is the bottleneck, not authorship.** Expect backend op failures from the Turboquant failure taxonomy.
+- **Toolchain hazard (2026-07-31):** this machine's CUDA toolchain is mixed — compile uses CUDA 13.3 (`/usr/local/cuda-13.3`), but a stale `CUDA_CUDART`/`CUDA_cudart_LIBRARY` cache var links system cudart 12.4 (`/usr/lib/x86_64-linux-gnu`), which returns garbage device props with driver 595 and caused first-launch CUDA failures (fixed via cache var override — see Bugs section; a fresh `cmake -B build` must re-apply `-DCUDA_CUDART=...` or the DFlash/first-launch crashes return).
+- **Model-format caveat (2026-07-31):** `*-rot-kv.gguf` files carry baked-in `attn_k_rot`/`attn_v_rot` tensors that no llama.cpp ref (fork or upstream) maps — they do not load (`expected 813, got 733`). Not a code bug.
 - **Cross-port drift.** Do not port `src/models` by whole-file copy; use backward-targeted patch application.
 - **`upstream/master` moves.** Lock base SHA `e9fa0781f1` at the start. (Current upstream base in tree: `876a4321`, fetched + re-rebased 2026-07-31.)
 - **Remote parity drift.** A clean tree on `dspark` or any local branch is not proof of remote parity. Confirm with `rev-parse` / `ls-remote` SHA equality before declaring sync.
