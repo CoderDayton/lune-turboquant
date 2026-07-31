@@ -1,0 +1,552 @@
+# TurboQuant Rebase Plan — `feature/turboquant-kv-cache` → latest `upstream/master`
+
+Source of truth: `git log upstream/master..HEAD` in `/mnt/storage/Projects/turboquant`
+- Local HEAD: `59145a4fa` *(original fork state — current rebase state: `ed572867c`, see STATUS below)*
+- Upstream/master: `e9fa0781f1` *(original fork state — current upstream base in tree: `5f55650a7`)*
+- merge-base: `1fd6dfe9f3` (confidence: medium; masked by squash merges)
+
+All commit IDs below are verified exists in the local fork. **If upstream/master already contains the same function/module/test/docs, it is preferred and the TurboQuant patch should be skipped or reduced to the minimum delta that preserves TurboQuant semantics.**
+
+---
+
+# 🔴 STATUS — 2026-07-31: REBASE COMPLETE, BUILD PASSES, RUNTIME VALIDATION PENDING
+
+> **This section supersedes the checklist below. Read this first.**
+
+## What was done (this session)
+
+- **The rebase/merge is complete.** The union of `feature/turboquant-kv-cache` and `upstream/master` is in the working tree on branch `feature/turboquant-kv-cache`.
+  - HEAD: `ed572867c` (TQ3_1S/TQ4_1S enum commit)
+  - upstream base now: `5f55650a7` (`mtmd: add lanczos resize method`)
+- **The full build succeeds, 0 errors:**
+  - `llama-cli` ✅ `llama-server` ✅ `llama-quantize` ✅ `test-backend-ops` ✅ `llama-bench` ✅
+  - Command: `cmake --build build --target llama-cli llama-server llama-quantize test-backend-ops llama-bench -j $(nproc)`
+  - Log: `/tmp/build-port16.log` (all `[100%] Built target ...`)
+  - Binaries present in `build/bin/` (incl. `libggml-cuda.so`, `libllama.so.0.0.10202`)
+- **Smoke tests pass:**
+  - `llama-server --version` → `10202 (ed572867c)` ✅
+  - `llama-bench` detects the CUDA device (`RTX 5090, compute capability 12.0`) ✅
+  - `llama-cli --help`, `llama-quantize --help`, `llama-bench --help` all run ✅
+  - `test-backend-ops -b CPU` runs ops (e.g. IM2COL_3D ... OK) ✅
+- **All 5 TurboQuant types are registered in `ggml/include/ggml.h`:**
+  - `GGML_TYPE_TURBO2_0 = 43`, `GGML_TYPE_TURBO3_0 = 44`, `GGML_TYPE_TQ3_1S = 45`, `GGML_TYPE_TQ4_1S = 46`, `GGML_TYPE_TURBO4_0 = 47`
+- **18 merge-artifact defects were found and fixed** by the iterative build-fix loop: 16 stacked-duplicate / dropped-symbol defects plus 2 bonus restorations (the `auto_flid` init and the `turbo-rotation-data.h`/`-32.h` headers). Full work log in [§7 Work Log](#7-work-log--the-18-merge-artifact-fixes-16-primary--2-bonus) below.
+- **DSPARK support RESTORED (2026-07-31)** — user decision (reversed the earlier strip). DSPARK is **upstream-merged code**: commit `84075273c` "spec: add DSpark speculative decoding (#25173)" (2026-07-28) is an ancestor of `upstream/master` (verified via `git merge-base --is-ancestor` against ref tip `5f55650a`, 2026-07-30 — see Decision 4); the earlier "uncommitted PR" belief was disproven. The fork itself has zero DSPARK, so DSPARK exists in this tree only as upstream code. All DSPARK code was restored from upstream across all 13 affected files. Verified: every file now matches upstream's `dspark` reference count exactly; the 5-target build passes; DFlash semantics preserved. **Important distinction:** `DGX-Spark` (NVIDIA GB10 / compute-capability 12.10 hardware support: `GGML_CUDA_CC_DGX_SPARK`, UMA handling) is a SEPARATE, upstream-merged feature and was never touched. See §7 Scope Decisions + Decision 4.
+- **No leftover conflict markers** in `src/`, `common/`, `ggml/`, `tools/` (the `=======` hits are ASCII art in comments/logs, not merge markers).
+
+## What still needs to be done
+
+- [ ] **RUNTIME validation with a real model** — nothing has been run against an actual GGUF model yet (no model file available in the repo). Must validate:
+  - `llama-bench` with turbo KV cache: `--cache-type-k q8_0 --cache-type-v turbo3 -ngl 99` (see §4)
+  - `llama-cli` decode with `--cache-type-k q8_0 --cache-type-v turbo3/4` on a dsv4 model
+  - DFlash speculative decoding path (`--spec draft-dflash`)
+- [ ] **`llama-quantize` type table does not list turbo/TQ types** — `llama-quantize --help` shows 0 turbo/TQ entries (only standard ftypes). The `ggml_type_from_name()` in `tools/llama-bench/llama-bench.cpp` has `turbo2/turbo3/turbo4` but NOT `tq3_1s/tq4_1s` (Group 1 verification failed on this point — see §1).
+- [x] **DSPARK: RESTORED (2026-07-31)** — `deepseek4-dspark.cpp` exists in **no ref** in this repo (fork included); the earlier "MISSING" claim was incorrect. DSPARK is **upstream-merged code**: commit `84075273c` "spec: add DSpark speculative decoding (#25173)" (2026-07-28) is an ancestor of `upstream/master`. The fork itself has zero DSPARK, so the code exists here only as upstream code and is kept in this tree. All DSPARK code was **restored** from upstream across 13 files (see §7 Scope Decisions + Decision 4). Every file now matches upstream's `dspark` ref counts. `DGX-Spark` hardware support was never touched.
+- [ ] **`docs/KV-cache-quantization.md` is MISSING** from the merged tree (`docs/speculative.md` ✅ exists). Re-add or update user-facing KV-cache-quantization docs.
+- [ ] **`tests/test-turbo-quant.c` is MISSING** from the merged tree. Re-add or port the round-trip test (`fix: inverse WHT in test-turbo-quant.c round-trip (#59)`).
+- [ ] **Commit the work** — 170 files are currently modified/untracked and *uncommitted* (`git status --short` = 170). Nothing is staged. Once runtime validation passes, commit in logical groups.
+- [ ] **`common/console.cpp` termios gating** — verify the fork's non-TTY gating survived (listed in §3/§6; `tcsetattr` failure taxonomy).
+- [ ] **Metal / Vulkan / SYCL runtime validation** — the ported code compiles for CUDA/CPU; Metal (`ggml-metal.metal` TurboFlash), Vulkan (turbo3/4 FA + SET_ROWS), and SYCL template-instance files are present as untracked files but were **not runtime-validated** on this Linux/CUDA host.
+- [ ] **Full `test-backend-ops` suite** — only a CPU subset was run. Run the complete suite (CPU + CUDA) to validate TQ3_1S/TQ4_1S kernels, SET_ROWS, and dsv4 KV ops.
+- [ ] **Baseline `f16` load check** — the §4 rule "f16 baseline must load cleanly before any turbo comparison" has not been executed.
+
+## Decisions recorded during the merge (deliberate "reduce to minimum delta" choices)
+
+1. **`common/speculative.cpp`: kept upstream's `common_speculative_impl_draft_dflash`** (3-arg ctor with `type` param) and **dropped the fork's older copy** (with `StashedG`/`m_use_deferred` deferred-KV-injection fields). The merged `common/common.h` and the impl factory are upstream-driven. Whole-tree grep confirmed **zero** external references to the dropped `StashedG`/`m_use_deferred`/`MAX_STASH`. *(2026-07-31: the DSPARK factory case that uses the 3-arg ctor was restored — see §7 Scope Decisions; the `type` ctor param defaults to DFLASH except in the restored DSPARK factory case, kept for upstream parity.)*
+2. **`src/models/eagle3.cpp`: restored the fork's version wholesale** — the union merge had produced a broken hybrid (upstream's `target_layer_ids`/`n_embd_tgt` formula spliced onto fork's `LLM_KV_EAGLE3_*` keys). All 16 symbols the fork's file references were verified present in the merged tree. Note: upstream's `norm_before_fc` support in eagle3 was consequently dropped.
+3. **`auto_flid` was silently disabled in the merged tree** until this session added both the `bool auto_flid;` field in `src/llama-cparams.h` and the `cparams.auto_flid = true;` default init in `src/llama-context.cpp` (matches upstream exactly). Without this, fused Lightning Indexer would never auto-resolve.
+4. **DSPARK: RESTORED from upstream (2026-07-31).** DSPARK is **upstream-merged code**: commit `84075273c` "spec: add DSpark speculative decoding (#25173)" (2026-07-28) is an ancestor of `upstream/master`, verified via `git merge-base --is-ancestor` against the local ref tip `5f55650a` (2026-07-30); the earlier "uncommitted PR" belief was disproven. The fork itself has zero DSPARK, and `deepseek4-dspark.cpp` exists in **no ref** in this repo; DSPARK exists in this tree only as upstream code. All DSPARK code was restored across 13 files (Group 9); every file now matches upstream's `dspark` ref counts, and the 5-target build passes. **Distinguish from DGX-Spark:** `GGML_CUDA_CC_DGX_SPARK` / UMA handling in `ggml-cuda` is NVIDIA hardware support (compute capability 12.10 / GB10), upstream-merged, and was never touched. **Hedge:** no `dgx-spark` *model* code exists in any ref of this repo — only the NVIDIA hardware macro — so if "dgx-spark" refers to a draft model, it is neither present nor ported.
+
+---
+
+## 1. Subsystem Grouping
+
+### Group 1 — Quantizer Registration + Convertor
+**STATUS: ✅ COMPLETED (code merged), ⚠️ one verification gap (quantize CLI table)**
+
+The commits that add new `ggml_type` enum values and `llama-quantize` support.
+
+- [x] `5bad823b1` `Update GGMLQuantizationType and LlamaFileType enums to include TQ3_1S and TQ4_1S quantization types with corresponding sizes in GGML_QUANT_SIZES.` — verified in `ggml/include/ggml.h` (TQ3_1S=45, TQ4_1S=46)
+- [x] `25a19f223` `feat: GGML_TYPE_TURBO2_0 — 2-bit TurboQuant KV cache (6.4x compression)` — `GGML_TYPE_TURBO2_0 = 43` present
+- [x] `6c9cfb1be` `experiment: split 2x4-entry constant LUT for M1 decode fix`
+- [x] `5e6277b6f` `fix: add turbo3/turbo4 cache types to llama-bench arg parser` — `turbo2/turbo3/turbo4` present in `tools/llama-bench/llama-bench.cpp:503-509`
+- [x] `f3f7c3c4b` `feat: InnerQ per-channel equalization + turbo2 64-group fallback`
+- [ ] **GAP**: `tq3_1s`/`tq4_1s` are NOT in `llama-bench.cpp::ggml_type_from_name()` and NOT in `llama-quantize --help` output. Add them to complete Group 1.
+
+Rebuild verification:
+```bash
+nm -C build/bin/llama-quantize | grep -E 'turbo[234]|TQ[34]_1S'   # ⚠️ currently returns nothing — see GAP above
+llama-quantize --help | grep -E 'turbo|TQ'                        # ⚠️ currently 0 hits
+```
+
+---
+
+### Group 2 — GGML Core + WHT Ops
+**STATUS: ✅ COMPLETED (code merged; `ggml/src/ggml-turbo-quant.c`, WHT op, turbo-quant headers present; SYCL `turbo-wht.cpp` present as untracked)**
+
+Must exist before runtime wiring or CUDA dispatch.
+
+- [x] `012faec26` `feat: add GGML_OP_TURBO_WHT — custom O(d log d) Walsh-Hadamard Transform`
+- [x] `377727552` `feat: replace dense 128x128 matvec with Fast Walsh-Hadamard rotation #26`
+- [x] `7173be941` `perf: optimized turbo3 dequant — eliminates context scaling regression`
+- [x] `a1fafdc44` `fix(meta): add GGML_OP_TURBO_WHT to tensor-split path (#196)` — GGML_OP_COUNT assert updated (ggml-rpc.h handled in this session)
+- [x] `f82f4083d` `fix(nix): remove duplicate spirv-headers entry (#195)`
+- [x] `bf590c723` `fix(turbo-quant): add forward declaration for turbo_cpu_fwht_inverse`
+
+Pitfall: if `tools/llama-bench/llama-bench.cpp:ggml_type_from_name()` in upstream already maps these enums, Group 1 is the only place you need parser patches.
+
+---
+
+### Group 3 — CUDA/HIP Kernel Dispatch
+**STATUS: ✅ COMPLETED (build passes with `libggml-cuda.so`; CUDA layer was the first part of the build to pass)**
+
+Backend op registration for turbo KV types. Apply only if upstream lacks dispatch.
+
+- [x] `70de24909` `fix(cuda): allow f16/bf16 + q8_0 mixed KV without GGML_CUDA_FA_ALL_QUANTS (#82)`
+- [x] `58bbe5518` `fix(cuda): add F16-K + TURBO-V dispatch cases in fattn.cu`
+- [x] `fa4e8be0a` `fix(cuda): add F16-K + TURBO-V dispatch cases in fattn.cu` *(alias)*
+- [x] `fec0719a3` `vulkan: add SET_ROWS support for turbo2_0 and turbo4_0 (#50)`
+- [x] `ed81ed03e` `CUDA/HIP: implement get_rows for TQ4_1S and TQ3_1S`
+- [x] `e69af784a` `fix(fattn): add (turbo*, F16) template instantiations`
+- [x] `5aeb2fdbe` `fix(hip): add (turbo*, F16) template-instance .cu files to HIP build`
+- [x] `7e341660d` `fix(perplexity): cast n_ctx * nv to size_t in KL logits save (#138)`
+- [x] `3c0efbdc6` `HIP/MUSA: fix build break from unguarded 3D peer memcpy and bare cudaEventCreate (#173)`
+- [x] `0757ff4ee` `fix(hip): bypass pool for FA f16 temp buffers to prevent OOM`
+- [x] `4d754604e` `fix: force VEC FA path for quantized KV on HIP/ROCm`
+- [x] `d7b533446` `fix(hip): bypass pool for FA f16 temp buffers to prevent OOM` *(alias)*
+- [x] `8993d4fd7` `fix: force VEC FA path for quantized KV on HIP/ROCm` *(alias pair)*
+- [x] `f2dc968bd` `cuda: disable sparse V skip (warp divergence regression)`
+- [x] `11a241d0d` `Merge pull request #105 from TheTom/fix/disable-sparse-v-cuda`
+
+Verification:
+```bash
+./build/bin/test-backend-ops -p 'SET_ROWS_TURBO*' >/tmp/set-rows.log   # empty output is expected
+```
+
+---
+
+### Group 4 — Runtime Wiring: `llama-context`, `llama-kv-cache`, `llama-graph`
+**STATUS: ✅ COMPLETED (build passes). Session fixes in this area:**
+- `src/llama-context.cpp` — removed duplicate `llm_fused_op_probe` block; added missing `cparams.auto_flid = true;` init
+- `src/llama-kv-cache.cpp` — re-inserted dropped `llama_kv_cache_context::get_k_idx` definition (link-stage catch); `turbo-rotation-data.h` / `turbo-rotation-data-32.h` restored from fork
+- `src/llama-graph.cpp` — removed stacked duplicate dsv4 section; removed duplicate `llm_graph_result::add_fused_node`
+- `src/llama-graph.h` — removed stacked duplicate classes; restored `using llm_graph_cb` typedef; restored `selected_experts_in` param in `build_moe_ffn` decl2
+
+Function-level targets:
+
+**`src/llama-context.cpp`**
+- [x] `k_is_turbo` / `v_is_turbo` head_dim zero-padding guards
+- [x] flash-attn auto-enable block for turbo types
+
+**`src/llama-kv-cache.cpp`**
+- [x] GQA auto-asymmetric gate
+- [x] layer-adaptive type checks / boundary V rewrites
+- [x] rotation matrix creation; K/V head_dim padding
+- [x] `get_k` / `get_v` padded-head return path
+- [x] `cpy_k` / `cpy_v` zero-padding + WHT group `op_params` writeback
+
+**`src/llama-graph.cpp`**
+- [x] flash-attn and non-FA inverse WHT post-processing path
+
+**direct commits touching these files from the verified list:**
+- [x] `db3595a75` `fix(kv-cache): per-side env-knob control for upstream attn rotation, default OFF`
+- [x] `b6f8e7f72` `fix(llama-graph): n_head_v reshape uses Q-head count, not KV-head count (#78)`
+- [x] `c452be605` `fix: disable upstream attn rotation by default (conflicts with TurboQuant)`
+- [x] `2f756e67e` `fork: reconcile MTP lineage with TurboQuant+ KV cache`
+- [x] `e8f23eb76` `docs: real Metal benchmarks after #include fix — 8× gap not 35× #23`
+- [x] `d044965e5` `feat: MSE-only mode — drop QJL, all 3 bits to PolarQuant #23`
+
+Verification:
+```bash
+./build/bin/llama-bench -m /path/to/model.gguf -ngl 99 --cache-type-k q8_0 --cache-type-v turbo3 -c 4096 -b 1 --n-gen 32 --no-host 1   # ⚠️ NOT YET RUN (no model available)
+```
+
+---
+
+### Group 5 — Flash-Attn / FA Kernel Instantiations
+**STATUS: ✅ COMPLETED (build passes with CUDA; template instances for turbo2/3/4 × f16/q8_0 present under `ggml/src/ggml-cuda/template-instances/`, `ggml/src/ggml-sycl/template-instances/`)**
+
+TurboQuant-specific FA kernels for CUDA/HIP/Metal/Vulkan/SYCL. **⚠️ HIGH CONFLICT RISK** because upstream `74976e1ae` and `90e0f5cfc` reshaped CUDA dispatch and fused-ops layout.
+
+- [x] `157f27f71` `perf: turbo VEC flash attention — +9% decode on CUDA via autoresearch`
+- [x] `a17a63a38` `fix: VEC flash-attn Q/K stride mismatch in vec_dot_fattn_vec_KQ_turbo3_0`
+- [x] `e9ab0452b` `fix: graceful fallback for turbo3 with non-128-aligned head dims (issue #13)`
+- [x] `fb2d86d31` `fix: graceful fallback for turbo3 on non-128-aligned head dims (issue #13)` *(alias)*
+- [x] `107362298` `fix: add TURBO2_0 to flash_attn auto-enable check`
+- [x] `93bf21d7a` `fix(metal): add turbo2/3/4 types to FLASH_ATTN_EXT and CPY support checks`
+- [x] `93bf21d7a` / `0198d5819` `vulkan: fix turbo3 build + coopmat FA after April upstream sync`
+- [x] `458c7f102` `vulkan: fix turbo3 build + coopmat FA after April upstream sync` *(alias)*
+- [x] `539ce5de9` `fix(fattn): gate turbo2 fused-MMA decode to head_dim 128`
+- [x] `4e223ee9a` `fattn: extend fused MMA decode to turbo3 + turbo2 (parity on turbo4)`
+- [x] `38dc66596` `turbo4 MMA decode: default ON (GQA-packed tensor-core path)`
+- [x] `b3e51cf3d` `feat(fattn): fused turbo4 MMA decode path (opt-in)`
+- [x] `77ab7e988` `turbo4: correct Lloyd-Max centroids, drop dead rnorm 68->66B`
+- [x] `545092c36` `turbo3 centroids: re-derive to exact Lloyd-Max optimum (match reference)`
+- [x] `bf9bf3180` `fix: TQ4_1S CUDA — mmvq exclusion for fused path + quantize tool registration` *(TQ weight variant)*
+- [x] `76ebd2650` `fix: TQ4_1S on MoE models — disable CUDA graphs for TQ MUL_MAT_ID`
+- [x] `6479b0b7f` `SYCL: add TurboQuant KV cache support for Intel GPUs`
+
+---
+
+### Group 6 — Vulkan + Vulkan-Turbo-FA
+**STATUS: ⚠️ MERGED (untracked shader files present: `dequant_tq4_1s.comp`, `dequant_turbo3_0.comp`, `mul_mat_vec_tq4_1s.comp`, `turbo_wht.comp`), NOT runtime-validated on this host**
+
+Apply only if Vulkan backend is in scope.
+
+- [x] `a494833d0` `feat: Vulkan compute shader support for turbo3 KV cache`
+- [x] `ff8bb7394` `vulkan: fix and complete turbo3 KV cache support`
+- [x] `88fcb67e5` `vulkan: add turbo3 backend tests`
+- [x] `035ac80d55` `tom/vulkan-turbo-fa` cleanup context trail
+- [x] `175a652dd` `vulkan: sync turbo4 centroid tables with the re-derived C reference`
+- [x] `03ff84818` `vulkan: drop removed rnorm field in turbo4_0 block (fix KV layout mismatch)`
+- [x] `bc5c9c891` `tests: cover turbo4 in SET_ROWS round-trip and flash-attn cross-backend cases`
+- [x] `a09bafedd` `vulkan: restore turbo_wht op + turbo3/4 FA dispatch (regression from b9190 upstream sync)`
+- [x] `36dc8e2ec` `rpc : update GGML_OP_COUNT assert for TURBO_WHT op (fixes RPC builds)`
+- [x] `7d5ac40c2` `vulkan: fix botched-merge FA shader preprocessor + gate turbo FA`
+- [x] `f94c3b840` `vulkan: force f32 accumulation for quantized K/V flash attention`
+- [x] `fd1be2101` `vulkan: submit more frequently on integrated GPUs to avoid device-lost`
+- [x] `2f8661751` `vulkan: fuse TurboQuant K/V dequant into flash attention`
+
+---
+
+### Group 7 — Metal / Apple Silicon
+**STATUS: ⚠️ MERGED (code present: TurboFlash kernels in `ggml-metal.metal`, `mul_mm_tq_rotated` pipeline, FLASH_ATTN_EXT/CPY type checks), NOT build/runtime-validated (no macOS host)**
+
+Apply only if Metal backend is in scope.
+
+- [x] `a494833d0` `feat: Vulkan compute shader support for turbo3 KV cache` *(not Metal; listed for cross-ref)*
+- [x] `e596f476f` `metal: add TurboFlash attention kernel for turbo3 KV cache decode`
+- [x] `a4736ffbd` `Add GitHub Sponsors funding link`
+- [x] `93bf21d7a` `fix(metal): add turbo2/3/4 types to FLASH_ATTN_EXT and CPY support checks`
+- [x] `67f076f2e` `fix(metal): disable TurboFlash by default — corrupt output on Apple10`
+- [x] `a1bcb34a1` `fix(metal): disable TurboFlash by default — corrupt output on Apple10` *(merge)*
+- [x] `d3271ac41` `fix: gate turbo V unpad on V type + disable TurboFlash on Apple10 (#91)`
+- [x] `b8b1d49b3` `fix(hip/metal): add missing f16-turbo fattn-vec instances`
+- [x] `b01afefed` `metal: drop write to removed rnorm field in turbo4_0 (fixes Apple Silicon startup crash)`
+- [x] `c452be605` `fix: disable upstream attn rotation by default (conflicts with TurboQuant)`
+- [x] `7f23abad6` `fix(metal): set ne12/ne13/r2/r3 function constants in mul_mm_tq_rotated pipeline`
+
+---
+
+### Group 8 — TQ3_1S / TQ4_1S Weight Quantization Layer
+**STATUS: ✅ COMPLETED (code merged; build passes). NOTE: quantize CLI type-table entries still missing (see Group 1 GAP).**
+
+These are first-class model-weight compression types in this fork. **Required, not optional.**
+
+- [x] `3a2fad19c` `feat: TQ3_1S + TQ4_1S weight quantization with V2.1 fused Metal kernels`
+- [x] `2ebd51963` `feat: CUDA port of TQ4_1S/TQ3_1S weight dequant (signalnine)`
+- [x] `8c2e0d878` `perf: fused TQ4_1S/TQ3_1S mul_mat_vec — 3.4x decode speedup`
+- [x] `adda3bc84` `fix: TQ4_1S on MoE models — disable CUDA graphs for TQ MUL_MAT_ID`
+- [x] `76ebd2650` `perf: V12 single-phase fused TQ mmvq — shmem activation, no global scratch`
+- [x] `51481c3b5` `perf: TQ4_1S native kernel 3.5× faster — 240 t/s (was 68), smaller VRAM`
+- [x] `cc1bae215` `perf: warp-cooperative TQ4_1S dequant (16× less compute per block)`
+- [x] `941d4567f` `feat: multi-token TQ4_1S dp4a kernel + multi-GPU fix + static build fix`
+- [x] `579db2981` `fix: replace __dp4a with ggml_cuda_dp4a for HIP/ROCm compatibility`
+- [x] `0bf1eef8d` `fix: AMD/RDNA4 arch dispatch — scalar half path for TQ4_1S on AMD GPUs`
+- [x] `c29fab6e8` `Enhance Metal operations for TQ weights and concurrency handling for Gemma 4`
+- [x] `753f19982` `feat: add MoE expert count kernel instantiations + TQ4_1S backend tests`
+- [x] `657160439` `fix: cap map0 kernel shmem for 256-expert MoE models`
+- [x] `71c7a4ced` `fix: remove redundant extern from GGML_API macro (GCC 13.3 hard error)`
+- [x] `fe2ead962` `Fix turbo4 C reference WHT dequant mismatch (#43)`
+- [x] `e3ce079be` `feat: load-time TQ4_1S -> q8_0 conversion for CUDA dp4a speed`
+- [x] `296259217` `fix: add dk512 Metal FA kernel instances for turbo types (Gemma 4 support)`
+- [x] `b1a6f79b3` `fix: CPU vec_dot heap allocation for turbo/TQ types (n > 4096 models)`
+- [x] `694ed0314` `fix: AMD HIP/ROCm build support for TQ4_1S weight compression`
+- [x] `06a6b6226` `experiment: batched byte extraction + explicit bit field pre-extract`
+
+Backends covered: Metal, CUDA, HIP/ROCm. Template instance coverage is intentionally not enumerated line-by-line; re-create from `ggml/src/ggml-cuda/template-instances/` and `ggml/src/ggml-sycl/template-instances/`.
+
+Verification:
+```bash
+nm -C build/bin/llama-quantize | grep -E 'TQ3_1S|TQ4_1S'   # ⚠️ pending — see Group 1 GAP
+./build/bin/llama-bench -m <tq-weighted-model.gguf> -ngl 99 -c 4096 -b 1 --n-gen 32 --no-host 1
+```
+
+---
+
+### Group 9 — DeepSeek-V4-Flash / DSPARK Speculative Draft Port
+**STATUS: ✅ COMPLETED — upstream DFlash + DSPARK speculative draft ported (`src/models/dflash.cpp` present with DSpark Markov head); DSPARK RESTORED from upstream (2026-07-31)**
+
+**Upstream has DFlash (`d1b34251b`) including the DSpark Markov-head variant (`84075273c` #25173). The fork itself has zero DSPARK. User decision (2026-07-31, then reversed the same day): DSPARK is RESTORED and kept — all of its code was brought back from upstream. `DGX-Spark` hardware support (a separate, upstream-merged feature) is retained.**
+
+- [x] `5d0c2929c` `spec : add DFlash support (#22105)` — upstream has this; merged (dflash.cpp present)
+- [x] `a4fd3adbd` `dflash: refactor draft model conversion (#25110)`
+- [x] `9c1ddef4d` `llama : add guard for K/V rotation input when buffer is unallocated (#25215)`
+- [x] `212b49cfb` `spec: support spec-draft-p-min in DFlash (#25246)`
+
+**DSPARK restore completed (13 files, all match upstream `dspark` ref counts):**
+- [x] `src/models/dflash.cpp` — DSpark tensor-loading block, `build_dspark_markov_head()`, and build-graph call restored
+- [x] `src/llama-arch.h/.cpp` — `LLM_TENSOR_DSPARK_MARKOV_W1/W2/CONF_PROJ` restored (enum + name map + layer ops)
+- [x] `src/llama-model.h` — `dspark_markov_w1/w2`, `dspark_conf_proj/_b` fields restored
+- [x] `common/common.h` — `COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK` enum entry + `need_n_rs_seq` ref restored
+- [x] `common/speculative.cpp` — `draft-dspark` map entry, `is_dspark` member/ctor/sampling-branch, type_to_str + n_max switch cases, factory case; `static_assert(COUNT == 11)`
+- [x] `gguf-py/gguf/constants.py` — `DSPARK_MARKOV_W1/W2` + `DSPARK_CONF_PROJ` enum, name map, DFLASH arch list entries restored
+- [x] `gguf-py/gguf/tensor_mapping.py` — DSPARK mappings restored
+- [x] `conversion/qwen.py` / `conversion/__init__.py` — `DSparkModel` / `Qwen3DSparkModel` restored
+- [x] `docs/speculative.md`, `tools/cli/README.md`, `tools/server/README.md` — `draft-dspark` docs restored
+**Note:** DSPARK is upstream-merged code (commit `84075273c` #25173, dated 2026-07-28, is an ancestor of `upstream/master`). DSPARK is kept in this tree. See Decision 4. **Runtime consequence (reversed):** a DSpark-format GGUF checkpoint (DFLASH arch + `markov_w1.weight`/`conf_proj` tensors) is **supported again** — those tensors are registered and such checkpoints load. **`DGX-Spark` hardware support (NVIDIA GB10 / CC 12.10) is a separate upstream-merged feature and was never touched.**
+
+---
+
+### Group 10 — Runtime Feature Flags: Layer-Adaptive, Boundary V, Sparse V, TurboFlash, Rotation Override
+**STATUS: ✅ MERGED (code present per Group 4 session fixes), ⚠️ runtime behavior not yet validated**
+
+These are behavioral toggles and runtime paths that must survive rebase even though they are scattered across runtime code rather than isolated commits.
+
+| Feature | Runtime location | Resolution rule | Status |
+|---------|------------------|-----------------|--------|
+| Layer-adaptive KV (`TURBO_LAYER_ADAPTIVE` env + mode 5/6/7) | `src/llama-kv-cache.cpp` | Preserve mode enum + auto-enable logic | ✅ merged |
+| Boundary V | `src/llama-kv-cache.cpp` boundary-first/last layer assignments | Append to upstream `llama_kv_cache` constructor | ✅ merged |
+| Sparse V skip (`TURBO_SPARSE_V=0` opt-out) | `ggml/src/ggml-cuda/fattn-vec.cuh`, `ggml/src/ggml-metal/ggml-metal.metal` | Re-add skip branch if removed | ✅ merged |
+| TurboFlash / Metal FA | `ggml/src/ggml-metal/*` | Keep additive | ✅ merged (unvalidated) |
+| Upstream rotation override (`ROT_OVERRIDE` / `TURBO_ROTATION_DISABLE`) | `src/llama-kv-cache.cpp` rotation env-knob path | Default OFF (TurboQuant manages rotation) | ✅ merged |
+
+---
+
+### Group 11 — Server / Bench CLI / UI / Docs / CI Hygiene
+**STATUS: ⚠️ PARTIAL — server/ui/bench items merged; docs/KV-cache-quantization.md and tests/test-turbo-quant.c MISSING**
+
+Apply last; lowest conflict risk.
+
+- [x] `514c6c768` `server: gate speculative init/warnings without dropping seq_rm probe`
+- [x] `f27268914` `ui: constrain chat inset height so long messages can scroll`
+- [x] `c09b7c879` `ui: don't trust a partial dist dir; validate full asset set before embedding`
+- [x] `3a45046f9` `ui: validate complete asset set in HF download before proceeding`
+- [x] `4503343ff` `docs: point prebuilt table at tqp-v0.3.0`
+- [x] `bb81d3334` `docs: add TurboQuant+ prebuild links`
+- [x] `558c6b78e` `docs: add Linux prebuild links`
+- [x] `99c2ed759` `ci: add TurboQuant+ release workflow`
+- [x] `4d24ad87b` `ci: add TurboQuant+ release workflow` *(v0.1.1)*
+- [x] `8ba9f1288` `vulkan: TQ4_1s support for model weights (#69)`
+- [ ] `07595065d` `fix: inverse WHT in test-turbo-quant.c round-trip (#59)` — **`tests/test-turbo-quant.c` MISSING in merged tree**
+- [x] `f03d33144` `vulkan: TQ4_1s support for model weights (#69)` *(v0.1.0)*
+
+---
+
+## 2. Verified Cherry-Pick Recipe
+
+> **NOTE (2026-07-31): the rebase was performed as a union merge, not via this
+> cherry-pick sequence. This recipe is retained as historical reference and for
+> replaying any missing pieces (e.g. the Group 1 TQ CLI gap, the docs/test-turbo-quant gaps).**
+
+```bash
+set -euo pipefail
+REPO=/mnt/storage/rebase-tq
+cd "$REPO"
+
+# 0. Remotes
+git remote add upstream https://github.com/ggerganov/llama.cpp.git 2>/dev/null || true
+git fetch upstream --tags --prune
+
+# 1. Fresh base
+git checkout -B feature/turboquant-kv-cache upstream/master
+
+# 2. Replay in dependency order; prefer upstream when the same
+#    function/module/test/docs already exists upstream.
+
+#    2a. quantizer + convertor registration
+for h in 5bad823b1 25a19f223 6c9cfb1be 5e6277b6f f3f7c3c4b; do
+  git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+done
+
+#    2b. GGML WHT ops
+for h in 012faec26 377727552 7173be941 a1fafdc44 f82f4083d bf590c723; do
+  git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+done
+
+#    2c. CUDA/HIP kernel dispatch
+for h in 70de24909 58bbe5518 fa4e8be0a fec0719a3 ed81ed03e e69af784a 5aeb2fdbe 7e341660d 3c0efbdc6 0757ff4ee 4d754604e f2dc968bd 11a241d0d; do
+  git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+done
+
+#    2d. Runtime wiring + FA corrections (function-targeted ahead of cherry-pick)
+for h in db3595a75 b6f8e7f72 c452be605; do
+  git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+done
+
+#    2e. FA / kernel quality/correctness fixes
+for h in 157f27f71 a17a63a38 107362298 93bf21d7a 0198d5819 458c7f102 \
+         539ce5de9 4e223ee9a 38dc66596 b3e51cf3d 77ab7e988 545092c36; do
+  git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+done
+
+#    2f. Vulkan + turbo-FA (optional by platform)
+# for h in a494833d0 ff8bb7394 88fcb67e5 175a652dd 03ff84818 bc5c9c891 \
+#          a09bafedd 36dc8e2ec 7d5ac40c2 f94c3b840 fd1be2101 2f8661751; do
+#   git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+# done
+
+#    2g. Metal (optional by platform)
+# for h in e596f476f 93bf21d7a 67f076f2e d3271ac41 b8b1d49b3 b01afefed 7f23abad6; do
+#   git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+# done
+
+#    2h. SYCL (optional by platform)
+# for h in 6479b0b7f d604b432c ae6e8577f 2fa44d526 236699777; do
+#   git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+# done
+
+#    2i. TQ weight quant layer — REQUIRED, not optional
+for h in 3a2fad19c 2ebd51963 8c2e0d878 adda3bc84 76ebd2650 \
+         51481c3b5 cc1bae215 941d4567f 579db2981 0bf1eef8d \
+         c29fab6e8 753f19982 657160439 71c7a4ced fe2ead962 \
+         e3ce079be 296259217 b1a6f79b3 694ed0314 06a6b6226; do
+  git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+done
+
+#    2j. dflash speculative draft (DSPARK restored from upstream — kept in tree)
+for h in a4fd3adbd 9c1ddef4d 212b49cfb; do
+  git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+done
+# DSPARK: user decision 2026-07-31 (reversed same day) — RESTORED. DSPARK is
+# upstream-merged code (commit 84075273c #25173 is an ancestor of upstream/master);
+# the code is present here only as upstream code and was restored across 13 files
+# (see REBASE_PLAN §7 Scope Decisions). DGX-Spark hardware support is a separate
+# feature, retained.
+
+#    2k. runtime feature flags — function-targeted patches
+#        layer-adaptive, boundary V, sparse V, TurboFlash, rotation override
+# See Group 10 table in REBASE_PLAN.md for exact files and rules.
+
+#    2l. server / ui / docs / ci
+for h in 514c6c768 f27268914 c09b7c879 3a45046f9 4503343ff bb81d3334 \
+         558c6b78e 99c2ed759 4d24ad87b 8ba9f1288 07595065d f03d33144; do
+  git cherry-pick -x "$h" || { echo "ABORT at $h"; exit 1; }
+done
+
+# 3. Rebuild after each group
+cmake --build build --target llama-cli llama-server llama-quantize test-backend-ops llama-bench -j "$(nproc)"
+nm -C build/bin/llama-quantize | grep -E 'turbo[234]|TQ[34]_1S' || true
+```
+
+---
+
+## 3. Conflict Resolution Recipes
+
+**This is the primary lever for moving success probability from ~70% to ~90%.**
+When a cherry-pick conflicts in the high-risk files below, do not blindly rerun. Use the preflight recipe scripts in `/mnt/storage/rebase-tq/rebase-diff-recipes/` to see exact upstream vs TurboQuant deltas, then apply only the TurboQuant-specific function targets.
+
+Run a recipe:
+```bash
+bash /mnt/storage/rebase-tq/rebase-diff-recipes/src_llama-kv-cache_cpp.sh | less
+```
+
+### Highest-risk conflict files + resolution rule
+| File | Resolution rule |
+|------|-----------------|
+| `src/llama-graph.cpp` | Accept upstream's `ggml_mul_mat_aux` refactor; re-add TurboQuant's inverse-WHT post-processing as a new helper called after upstream's path, not by overwriting `ggml_mul_mat_aux`. |
+| `src/llama-kv-cache.cpp` | Upstream added `llama_kv_cell` metadata changes; preserve upstream cell layout and patch only the turbo-specific `get_k`/`get_v`/`cpy_k`/`cpy_v` padded-head returns and WHT `op_params`. |
+| `src/llama-context.cpp` | Upstream added `llm_fused_op_probe` table; append TurboQuant turbo types to the existing probe array rather than replacing it. |
+| `ggml/include/ggml.h` | Merge enum blocks: keep upstream order, append TQ3_1S/TQ4_1S immediately after the highest existing turbo enum. Do not reorder existing entries. |
+| `ggml/src/ggml-quants.c` | Upstream added Q2_0 quantization tables; append turbo/TQ tables after the existing quantizer arrays. Do not duplicate existing entries. |
+| `src/models/dflash.cpp` | Upstream has DFlash (`d1b34251b`). Use upstream's draft-model impl as the base and apply only TurboQuant-specific `bonus_anchor` guards on top. The DSpark Markov-head code is kept in the tree (restored from upstream, 2026-07-31). |
+| `tools/llama-bench/llama-bench.cpp` | Upstream reshaped args handling. Patch only the `ggml_type_from_name()` return mapping; leave upstream argparse structures untouched. |
+| `common/console.cpp` | Apply termios gating as an additive guard only; do not touch upstream console init/display logic. |
+| `common/speculative.cpp` | Upstream added DFlash + speculative plumbing; append TurboQuant draft-type cases rather than replacing enum blocks. |
+
+### When to stop and ask
+If a conflict affects the function signature, struct layout, or call graph of upstream shared code (not just TurboQuant-specific blocks), stop cherry-picking that group and switch to function-targeted patches from the recipe. Do not force a cherry-pick through with `-X theirs` on shared files.
+
+---
+
+## 4. Validation Artifact Rules
+
+- `f16` baseline must load cleanly before any turbo comparison. **⚠️ not yet executed (no model file).**
+- Capture exact `t/s`, VRAM, startup time per build.
+- `stat build/bin/llama-bench`, `build/bin/llama-cli`, `build/bin/llama-server`, `build/bin/libggml-cuda.so.0`, `build/bin/libllama.so.*`.
+- `test-backend-ops -p 'SET_ROWS_TURBO1'` matches 0 tests by design. Not proof of runtime success.
+
+### Failure taxonomy before rerunning
+- `tcsetattr: Inappropriate ioctl for device` → `common/console.cpp` termios gating
+- `cannot run the operation (SET_ROWS)` → missing CUDA dispatch for the type
+- `GGML_ASSERT(tensor->nb[0] == ggml_element_size(tensor)) failed` → allocator padding patch
+- Generic `failed to create context` without assert text → instrument `llama_init_from_model` for `err.what()` + backtrace
+
+---
+
+## 5. Merge Base
+
+- Commit: `1fd6dfe9f3d4b69cce101d832339fbda2d14b056`
+- Confidence: medium (squash-merges obscure true ancestor)
+- Confirm post-construction with: `git merge-base HEAD upstream/master`
+- Current state: branch `feature/turboquant-kv-cache`, HEAD `ed572867c`, upstream base `5f55650a7`
+
+---
+
+## 6. File Map: All Files That Must Be Patched
+
+| File | Reason | Status |
+|------|--------|--------|
+| `ggml/include/ggml.h` | `ggml_type` enum entries for turbo quantizers + TQ3_1S/TQ4_1S | ✅ present (types 43-47) |
+| `ggml/src/ggml-quants.c` | Quantizer tables, codec symbols | ✅ present |
+| `ggml/src/ggml-turbo-quant.c` | WHT, codec entry points | ✅ present |
+| `ggml/src/ggml-cuda/concat.cu` | Contiguity/quantized concat for turbo tensors | ✅ present |
+| `ggml/src/ggml-cuda/set-rows.cu` | SET_ROWS turbo dispatch | ✅ present |
+| `ggml/src/ggml-cuda/convert.cu` | get_rows for TQ3_1S/TQ4_1S | ✅ present |
+| `ggml/src/ggml-cuda/fattn.cu` | F16-K + TURBO-V dispatch cases | ✅ present |
+| `ggml/src/ggml-cuda/fattn-vec.cu` | turbo* template instantiations | ✅ present |
+| `ggml/src/ggml-cuda/mvvq.cu` / `mmvq.cu` | TQ weight fused mmvq | ✅ present |
+| `ggml/src/ggml-metal.metal` | Metal turbo decode kernels | ✅ present (unvalidated) |
+| `ggml/src/ggml-vulkan.c` / shaders | Vulkan SET_ROWS + turbo3/4 FA | ✅ present (unvalidated) |
+| `ggml/src/ggml-sycl.mm` | SYCL TurboQuant KV support | ✅ present (unvalidated) |
+| `src/llama-context.cpp` | Turbo guards, head_dim padding, flash-attn auto-enable | ✅ fixed this session |
+| `src/llama-kv-cache.cpp` | Asymmetric gate, layer-adaptive types, rotated V boundary, WHT op_params | ✅ fixed this session (get_k_idx restored) |
+| `src/llama-graph.cpp` | Inverse-WHT post-processing | ✅ fixed this session |
+| `src/models/dflash.cpp` + `models.h` | DFlash draft path | ✅ present |
+| `src/models/deepseek4-dspark.cpp` | DSPARK draft path | ✅ **RESTORED** (never existed in any ref; kept as upstream code in `dflash.cpp`, 2026-07-31) |
+| `common/speculative.cpp` | Draft-type enum plumbing | ✅ fixed this session |
+| `tools/llama-quantize/*` | Convert/quant entry + calibration gate | ⚠️ type table missing TQ entries |
+| `tools/llama-bench/llama-bench.cpp` | `ggml_type_from_name()` token→enum | ⚠️ has turbo2/3/4, missing tq3_1s/tq4_1s |
+| `gguf-py/gguf/*.py` | DFlash tensor mappings + bonus-anchor keys | ✅ DSPARK mappings restored |
+| `conversion/qwen.py` / `conversion/__init__.py` | DSpark/DSPARK mappings | ✅ `DSparkModel`/`Qwen3DSparkModel` restored |
+| `common/console.cpp` | termios gating for non-TTY scripted runs | ⚠️ verify gating survived |
+| `docs/KV-cache-quantization.md`, `docs/speculative.md` | User-facing instructions | ⚠️ KV-cache-quantization.md MISSING; speculative.md ✅ |
+| `tools/ui/dist/*` | Prebuilt static assets | ✅ present |
+| `.github/workflows/*` | TurboQuant+ release workflow | ✅ present |
+| `tests/test-turbo-quant.c` | WHT round-trip test | ❌ **MISSING** |
+
+---
+
+## 7. Work Log — The 18 Merge-Artifact Fixes (16 primary + 2 bonus)
+
+> The union merge stacked duplicate blocks and dropped a few definitions. Each was found
+> via the iterative build-fix loop (`build-port*.log`), verified byte-identical against
+> `upstream/master` and/or `backup/fork-tip-59145a4fa` where relevant, then fixed
+> deterministically. All 16 are COMPLETED and the build passes.
+
+1. ✅ **`src/llama-graph.cpp`** — removed stacked duplicate dsv4 section (kept fork's copy, which uniquely contains `llm_graph_input_attn_kv_iswa`; both copies verified byte-identical to upstream AND fork).
+2. ✅ **`src/llama-hparams.h`** — removed duplicate dsv4 field block (8 fields incl. `dsv4_compress_ratios`).
+3. ✅ **`src/llama-arch.h`** — removed 26 duplicate `LLM_KV_`/`LLM_TENSOR_` enum entries (keep-first dedup; enum is name-keyed so safe); inserted missing `LLM_ARCH_MINIMAX_M3` and `LLM_ARCH_NANBEIGE` at upstream's exact positions.
+4. ✅ **`src/llama-graph.h`** — removed stacked duplicate classes (`llm_graph_input_dsv4_raw`, `llm_graph_input_dsv4`, `llm_graph_fused_node`); removed duplicate `llm_graph_result` members (`add_fused_node`/`get_fused_nodes`/`fused_nodes`); restored the `using llm_graph_cb` typedef that the dedup accidentally consumed; removed duplicate `build_inp_dsv4` declaration.
+5. ✅ **`src/llama-kv-cache.h`** — removed duplicate `get_layer_ids`/`get_k_storage` declarations (fork's copy).
+6. ✅ **`src/llama-arch.cpp`** — removed duplicate `case LLM_ARCH_DEEPSEEK4:`.
+7. ✅ **`src/llama-model.h`** — removed duplicate `wo_a` and the entire stacked second DeepSeek-V4 per-layer tensor block.
+8. ✅ **`src/llama-context.cpp`** — removed duplicate `llm_fused_op_probe` struct + 7 probe constants (byte-identical copies).
+9. ✅ **`src/models/models.h`** — removed duplicate `struct llama_model_deepseek4` (byte-identical, 114 lines).
+10. ✅ **`src/llama-cparams.h`** — added missing `bool auto_flid;` field (upstream has it; merged `llama-context.cpp` references it).
+11. ✅ **`src/llama-graph.h`** — restored missing `selected_experts_in` parameter in `build_moe_ffn` decl2 (fork's header had dropped it; the merged .cpp definition + call site use upstream's 24-arg signature).
+12. ✅ **`src/llama-model.cpp`** — inserted missing `} break;` closing the `GLM_DSA` case in `create_memory` (the merge had lost it, nesting the `DEEPSEEK4` case inside `GLM_DSA` — the root cause of the whole-file brace imbalance).
+13. ✅ **`src/llama-graph.cpp`** — removed duplicate `llm_graph_result::add_fused_node` definition (byte-identical; kept upstream-positioned copy).
+14. ✅ **`src/models/eagle3.cpp`** — restored fork's version wholesale (the merge produced a broken upstream/fork hybrid referencing undeclared `target_layer_ids`/`n_embd_tgt`; all 16 fork-symbol dependencies verified present in merged tree).
+15. ✅ **`common/speculative.cpp`** — removed fork's duplicate `common_speculative_impl_draft_dflash` (kept upstream's 3-arg-ctor version; whole-tree grep confirmed the dropped `StashedG`/`m_use_deferred` had zero external refs). *(2026-07-31: the DSPARK references in this struct were restored — see §7 Scope Decisions.)*
+
+**Scope decisions (not merge-artifact defects):**
+
+- ✅ **DSPARK restore (2026-07-31)** — user decision (reversed the earlier strip same day). Restored all DSPARK code across 13 files (see Group 9): DSpark Markov head in `dflash.cpp`, `LLM_TENSOR_DSPARK_*` in `llama-arch.h/.cpp`, `dspark_*` fields in `llama-model.h`, `COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK` + `is_dspark` logic in `common/common.h` + `common/speculative.cpp` (enum 10 -> 11, incl. the factory case that was false-skipped by the restore script's idempotency marker and hand-fixed), gguf-py tensors/mappings, `conversion/qwen.py` `DSparkModel`, and `draft-dspark` docs (incl. `--spec-type` list + table row). Verified: every file matches upstream's `dspark` ref counts exactly (dflash.cpp 20/20, speculative.cpp 16/16, docs 9/9, etc.); 5-target build passes; Python syntax OK; DFlash semantics preserved (`n_draft_max = block_size-1`, `n_block_tokens = n_draft+1`, greedy branch kept). DSPARK is upstream-merged code (commit `84075273c` #25173 is an ancestor of `upstream/master`). `DGX-Spark` hardware support was never touched.
+16. ✅ **`src/llama-kv-cache.cpp`** — re-inserted dropped `llama_kv_cache_context::get_k_idx` definition (declared in header, defined in upstream at :2847-2848, absent in merged .cpp — surfaced at link stage).
+
+**Bonus fixes:**
+- ✅ `src/llama-context.cpp` — added `cparams.auto_flid = true;` default init (was silently missing; fused Lightning Indexer would never auto-resolve).
+- ✅ Restored `src/turbo-rotation-data.h` / `src/turbo-rotation-data-32.h` from the fork (referenced by `llama-kv-cache.cpp` but missing from the merge).
+
+---
+
+## 8. Risks
+
+- **Validation is the bottleneck, not authorship.** Expect backend op failures from the Turboquant failure taxonomy.
+- **Cross-port drift.** Do not port `src/models` by whole-file copy; use backward-targeted patch application.
+- **`upstream/master` moves.** Lock base SHA `e9fa0781f1` at the start. (Current upstream base in tree: `5f55650a7`.)
+- **Remote parity drift.** A clean tree on `dspark` or any local branch is not proof of remote parity. Confirm with `rev-parse` / `ls-remote` SHA equality before declaring sync.
+- **NEW — 170 files uncommitted.** Everything above lives in the working tree. Commit after runtime validation, in logical groups.
+- **NEW — runtime-untested.** Build/smoke tests pass, but no real-model inference, no turbo-KV-cache decode, no draft-model run has been executed yet.
+- **RESOLVED — DSPARK is upstream-merged code.** The prior risk (DSPARK dropped on sync) is resolved: commit `84075273c` "spec: add DSpark speculative decoding (#25173)" (2026-07-28) is an ancestor of `upstream/master` (verified via `git merge-base --is-ancestor` against ref tip `5f55650a`, 2026-07-30), so DSPARK is merged upstream and is kept in this tree. `DGX-Spark` (NVIDIA hardware support) is separate and retained.
