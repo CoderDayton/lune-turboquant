@@ -39,7 +39,7 @@ All commit IDs below are verified exists in the local fork. **If upstream/master
 
 ## What still needs to be done
 
-- [ ] **RUNTIME validation with a real model** — **PARTIALLY DONE (2026-07-31 evening):** turbo2/3/4 KV verified on Qwen3-8B-Q8_0 + Qwen3.5-9B-UD (bench + end-to-end llama-cli decode); DFlash speculative decoding verified (Qwen3.6-35B-A3B-DFlash draft + KAT-Coder-2.5-Dev-Q5_K_S main, turbo3 V, small ctx). Still pending: dsv4-family decode, DSpark draft run, perplexity, long-context runs.
+- [ ] **RUNTIME validation with a real model** — **PARTIALLY DONE (2026-07-31 evening):** turbo2/3/4 KV verified on Qwen3-8B-Q8_0 + Qwen3.5-9B-UD (bench + end-to-end llama-cli decode); DFlash speculative decoding verified (Qwen3.6-35B-A3B-DFlash draft + KAT-Coder-2.5-Dev-Q5_K_S main, turbo3 V, small ctx). **BLOCKED BY HARDWARE:** dsv4-family decode and DSpark draft run — every DeepSeek-V4-Flash GGUF in /mnt/storage/models is 90-230 GB (Q2_K 3x46G, Q3 4x46G, Q4_K_XL 5x46G) vs 32 GB VRAM on the RTX 5090; CPU-only is impractical. Needs a smaller dsv4 main or a bigger GPU.
   - Bench results (Qwen3-8B-Q8_0, CUDA, after the cudart fix — see Bugs section): f16 pp=3574/tg=152, turbo2 pp=3546/tg=150, turbo3 pp=12110(!)/tg=157, turbo4 pp=3461/tg=147. Qwen3.5-9B: turbo3 pp=4144/tg=117, turbo4 pp=4172/tg=117.
   - DFlash run: main 35B-A3B Q5_K_S (23G) + draft 402M, `--spec-type draft-dflash -ctv turbo3 -c 1024`, generated correctly, clean exit.
 - [x] **`llama-quantize` CLI type table + `llama-bench` parser — DONE (2026-07-31):** added `TQ3_1S`/`TQ4_1S` rows to `tools/quantize/quantize.cpp` (fork-exact rows, `--help` now lists them) and `tq3_1s`/`tq4_1s` to `llama-bench.cpp::ggml_type_from_name()`. Group 1 GAP closed.
