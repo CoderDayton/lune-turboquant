@@ -1246,6 +1246,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     }
 };
 
+// DFlash: block-diffusion drafting with a draft-side KV cache injection
 struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     common_params_speculative_draft params; // reuses the draft-model params slot (ctx_tgt/ctx_dft)
 
@@ -2391,6 +2392,13 @@ common_speculative * common_speculative_init(common_params_speculative & params,
         bool has_draft_dflash = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)) && params.draft.ctx_dft != nullptr;
         bool has_draft_dspark = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK)) && params.draft.ctx_dft != nullptr;
 
+        // If --dflash or --eagle3 flags are set, enable the corresponding type
+        if (!has_draft_dflash && params.draft.dflash && params.draft.ctx_dft != nullptr) {
+            has_draft_dflash = true;
+        }
+        if (!has_draft_eagle3 && params.draft.eagle3 && params.draft.ctx_dft != nullptr) {
+            has_draft_eagle3 = true;
+        }
 
 
         bool has_ngram_cache   = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_CACHE));

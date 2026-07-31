@@ -187,6 +187,8 @@ class Keys:
         OUTPUT_GROUP_COUNT           = "{arch}.attention.output_group_count"
         OUTPUT_LORA_RANK             = "{arch}.attention.output_lora_rank"
         OUTPUT_SCALE                 = "{arch}.attention.output_scale"
+        COMPRESS_RATIOS              = "{arch}.attention.compress_ratios"
+        COMPRESS_ROPE_FREQ_BASE      = "{arch}.attention.compress_rope_freq_base"
         VALUE_SCALE                  = "{arch}.attention.value_scale"
         COMPRESS_RATIOS              = "{arch}.attention.compress_ratios"
         COMPRESS_ROPE_FREQ_BASE      = "{arch}.attention.compress_rope_freq_base"
@@ -206,6 +208,11 @@ class Keys:
             BLOCK_SIZE   = "{arch}.attention.indexer.block_size"    # MSA
             LOCAL_BLOCKS = "{arch}.attention.indexer.local_blocks"  # MSA
             TYPES      = "{arch}.attention.indexer.types"
+
+    class HyperConnection:
+        COUNT                = "{arch}.hyper_connection.count"
+        SINKHORN_ITERATIONS  = "{arch}.hyper_connection.sinkhorn_iterations"
+        EPSILON              = "{arch}.hyper_connection.epsilon"
 
     class HyperConnection:
         COUNT                = "{arch}.hyper_connection.count"
@@ -588,6 +595,9 @@ class MODEL_TENSOR(IntEnum):
     HC_HEAD_BASE         = auto()
     HC_HEAD_SCALE        = auto()
     ROPE_FREQS           = auto()
+    HC_HEAD_FN           = auto()
+    HC_HEAD_BASE         = auto()
+    HC_HEAD_SCALE        = auto()
     ROPE_FACTORS_LONG    = auto()
     ROPE_FACTORS_SHORT   = auto()
     ATTN_Q               = auto()
@@ -628,6 +638,7 @@ class MODEL_TENSOR(IntEnum):
     FFN_EXP_PROBS_B      = auto()
     FFN_GATE_TID2EID     = auto()
     MOE_LATENT_DOWN      = auto() # nemotron 3 super
+    FFN_GATE_TID2EID     = auto()
     MOE_LATENT_UP        = auto() # nemotron 3 super
     ATTN_Q_NORM          = auto()
     ATTN_K_NORM          = auto()
@@ -729,6 +740,20 @@ class MODEL_TENSOR(IntEnum):
     ATTN_COMPRESSOR_APE  = auto()
     ATTN_COMPRESSOR_NORM = auto()
     FFN_SUB_NORM         = auto()
+    ATTN_KV              = auto()
+    ATTN_KV_NORM         = auto()
+    ATTN_OUT_A           = auto()
+    ATTN_OUT_B           = auto()
+    HC_ATTN_FN           = auto()
+    HC_ATTN_BASE         = auto()
+    HC_ATTN_SCALE        = auto()
+    HC_FFN_FN            = auto()
+    HC_FFN_BASE          = auto()
+    HC_FFN_SCALE         = auto()
+    ATTN_COMPRESSOR_WKV  = auto()
+    ATTN_COMPRESSOR_WGATE = auto()
+    ATTN_COMPRESSOR_APE  = auto()
+    ATTN_COMPRESSOR_NORM = auto()
     ATTN_SUB_NORM        = auto()
     DEC_ATTN_NORM        = auto()
     DEC_ATTN_Q           = auto()
@@ -1107,6 +1132,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.DEEPSEEK32:       "deepseek32",
     MODEL_ARCH.DEEPSEEK4:        "deepseek4",
     MODEL_ARCH.CHATGLM:          "chatglm",
+    MODEL_ARCH.DEEPSEEK4:        "deepseek4",
     MODEL_ARCH.GLM4:             "glm4",
     MODEL_ARCH.GLM4_MOE:         "glm4moe",
     MODEL_ARCH.GLM_DSA:          "glm-dsa",
@@ -1190,6 +1216,9 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.MASKED_EMBD_CENTROIDS:     "masked_embd_centroids",
     MODEL_TENSOR.MASKED_EMBD_ORDERING:      "masked_embd_ordering",
     MODEL_TENSOR.POS_EMBD:                  "position_embd",
+    MODEL_TENSOR.HC_HEAD_FN:                "output_hc_fn",
+    MODEL_TENSOR.HC_HEAD_BASE:              "output_hc_base",
+    MODEL_TENSOR.HC_HEAD_SCALE:             "output_hc_scale",
     MODEL_TENSOR.OUTPUT_NORM:               "output_norm",
     MODEL_TENSOR.OUTPUT:                    "output",
     MODEL_TENSOR.DENSE_2_OUT:               "dense_2", # embeddinggemma 2_Dense
@@ -1237,6 +1266,7 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.FFN_DOWN_EXP:              "blk.{bid}.ffn_down_exps",
     MODEL_TENSOR.FFN_UP_EXP:                "blk.{bid}.ffn_up_exps",
     MODEL_TENSOR.FFN_GATE_UP_EXP:           "blk.{bid}.ffn_gate_up_exps",
+    MODEL_TENSOR.FFN_GATE_TID2EID:          "blk.{bid}.ffn_gate_tid2eid",
     MODEL_TENSOR.FFN_EXP_PROBS_B:           "blk.{bid}.exp_probs_b",
     MODEL_TENSOR.FFN_GATE_TID2EID:          "blk.{bid}.ffn_gate_tid2eid",
     MODEL_TENSOR.MOE_LATENT_DOWN:           "blk.{bid}.ffn_latent_down",      # nemotron 3 super
@@ -4651,6 +4681,10 @@ MODEL_TENSOR_SKIP: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.ROPE_FREQS,
         MODEL_TENSOR.ATTN_ROT_EMBD,
     ],
+    MODEL_ARCH.DEEPSEEK4: [
+        MODEL_TENSOR.ROPE_FREQS,
+        MODEL_TENSOR.ATTN_ROT_EMBD,
+    ],
     MODEL_ARCH.DEEPSEEK32: [
         MODEL_TENSOR.ROPE_FREQS,
         MODEL_TENSOR.ATTN_ROT_EMBD,
@@ -4745,9 +4779,10 @@ class GGMLQuantizationType(IntEnum):
 
 
 class ExpertGatingFuncType(IntEnum):
-    SOFTMAX       = 1
-    SIGMOID       = 2
-    SQRTSOFTPLUS  = 4
+    SOFTMAX        = 1
+    SIGMOID        = 2
+    SOFTMAX_WEIGHT = 3
+    SQRTSOFTPLUS   = 4
 
 
 # TODO: add GGMLFileType from ggml_ftype in ggml.h
@@ -4800,6 +4835,7 @@ class LlamaFileType(IntEnum):
     MOSTLY_Q2_0          = 41  # except 1d tensors
     MOSTLY_TQ3_1S        = 43  # except 1d tensors
     MOSTLY_TQ4_1S        = 44  # except 1d tensors
+
 
     GUESSED              = 1024  # not specified in the model file
 

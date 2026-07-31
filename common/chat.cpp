@@ -1603,7 +1603,7 @@ static common_chat_params common_chat_params_init_kimi_k2(const common_chat_temp
 
         // Note: this model is CRAZY. It can diverge from its supposed tool calling pattern in so many ways it's not funny.
         // For example, it can call tools at the end of reasoning without closing reasoning...
-        auto reasoning = extract_reasoning ? p.optional(THINK_START + p.reasoning(
+        auto reasoning = extract_reasoning ? p.optional(p.space() + THINK_START + p.reasoning(
             p.until_one_of({ THINK_END, "<|tool_calls_section_begin|>", "<|tool_call_begin|>" })) +
             p.optional(p.literal(THINK_END))) : p.eps();
         auto generation_prompt = p.literal(GEN_PROMPT);
@@ -1734,7 +1734,9 @@ static common_chat_params common_chat_params_init_lfm2(const common_chat_templat
 
         auto reasoning = p.eps();
         if (extract_reasoning) {
-            reasoning = p.optional(THINK_START + p.reasoning(p.until(THINK_END)) + THINK_END);
+            // Allow optional whitespace before <think> — some models emit a
+            // newline between the generation prompt and the thinking tag.
+            reasoning = p.optional(p.space() + THINK_START + p.reasoning(p.until(THINK_END)) + THINK_END);
         }
 
         if (!has_tools || inputs.tool_choice == COMMON_CHAT_TOOL_CHOICE_NONE) {
@@ -2075,7 +2077,9 @@ static common_chat_params common_chat_params_init_deepseek_v3_2(const common_cha
         }
 
         if (extract_reasoning && inputs.enable_thinking) {
-            reasoning = p.optional(THINK_START + p.reasoning(p.until(THINK_END)) + THINK_END);
+            // Allow optional whitespace before <think> — some models emit a
+            // newline between the generation prompt and the thinking tag.
+            reasoning = p.optional(p.space() + THINK_START + p.reasoning(p.until(THINK_END)) + THINK_END);
             reasoning_with_tc = THINK_START + p.reasoning(p.until_one_of({ FC_START, THINK_END })) + obligatory_tool_calls;
             allow_reasoning_with_tc = true;
         } else if (extract_reasoning) {

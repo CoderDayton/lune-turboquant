@@ -121,7 +121,6 @@ llama_model_dflash::graph<true>::graph(const llama_model & model, const llm_grap
 
     ggml_build_forward_expand(gf, cur);
 }
-
 // DSpark (DFlash + Markov & Confidence head): Markov bias on the draft logits, chained per block position
 static void build_dspark_markov_head(llm_graph_context & g, const llama_model & model, ggml_tensor * tokens) {
     ggml_context * ctx0 = g.ctx0;

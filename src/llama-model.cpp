@@ -841,6 +841,7 @@ static const char * llama_expert_gating_func_name(llama_expert_gating_func_type 
     switch (type) {
         case LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX: return "softmax";
         case LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID: return "sigmoid";
+        case LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT: return "softmax_weight";
         case LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS: return "sqrtsoftplus";
         default:                                    return "unknown";
     }
@@ -1308,8 +1309,18 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         split_sum += splits[i];
         splits[i] = split_sum;
     }
-    for (size_t i = 0; i < n_devices(); ++i) {
-        splits[i] /= split_sum;
+    if (split_sum <= 0.0f) {
+        // all devices reported zero free memory (e.g. a fitted primary model packed
+        // the GPU before a draft model load) - normalizing would produce NaN split
+        // points and an out-of-range device index below. fall back to a uniform split.
+        LLAMA_LOG_WARN("%s: all device split weights are zero, falling back to a uniform split\n", __func__);
+        for (size_t i = 0; i < n_devices(); ++i) {
+            splits[i] = float(i + 1) / n_devices();
+        }
+    } else {
+        for (size_t i = 0; i < n_devices(); ++i) {
+            splits[i] /= split_sum;
+        }
     }
 
     const int i_gpu_start = std::max(n_layer_all + 1 - n_gpu_layers, 0);
@@ -1320,7 +1331,9 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(cpu_dev), is_swa);
             return {cpu_dev, &pimpl->cpu_buft_list};
         }
-        const int layer_gpu = std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start)/act_gpu_layers) - splits.begin();
+        const int layer_gpu = std::min<int>(
+            std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start)/act_gpu_layers) - splits.begin(),
+            (int) n_devices() - 1);
         auto * dev = devices.at(layer_gpu).dev;
         LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(dev), is_swa);
         return {dev, &pimpl->gpu_buft_list.at(dev)};
@@ -2137,6 +2150,23 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             filter,
                             nullptr);
                 }
+            } break;
+        case LLM_ARCH_DEEPSEEK4:
+            {
+                res = new llama_kv_cache_dsv4(
+                        *this,
+                        params.type_k,
+                        params.type_v,
+                        !cparams.flash_attn,
+                        cparams.offload_kqv,
+                        params.swa_full,
+                        cparams.kv_unified,
+                        cparams.n_ctx_seq,
+                        cparams.n_seq_max,
+                        cparams.n_ubatch,
+                        1,
+                        nullptr,
+                        nullptr);
             } break;
         // Models that need standard caching should rely on recurrent/hybrid
         // checks
