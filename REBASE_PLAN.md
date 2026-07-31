@@ -1,7 +1,7 @@
-# TurboQuant Rebase Plan — `feature/turboquant-kv-cache` → latest `upstream/master`
+# TurboQuant Rebase Plan — `feature/turboquant-kv-cache-rebase` (from `feature/turboquant-kv-cache`) → latest `upstream/master`
 
 Source of truth: `git log upstream/master..HEAD` in `/mnt/storage/Projects/turboquant`
-- Local HEAD: `59145a4fa` *(original fork state — current rebase state: `ed572867c`, see STATUS below)*
+- Local HEAD: `59145a4fa` *(original fork state — current rebase state: `f987a49f8` on `feature/turboquant-kv-cache-rebase`, see STATUS below)*
 - Upstream/master: `e9fa0781f1` *(original fork state — current upstream base in tree: `5f55650a7`)*
 - merge-base: `1fd6dfe9f3` (confidence: medium; masked by squash merges)
 
@@ -15,16 +15,19 @@ All commit IDs below are verified exists in the local fork. **If upstream/master
 
 ## What was done (this session)
 
-- **The rebase/merge is complete.** The union of `feature/turboquant-kv-cache` and `upstream/master` is in the working tree on branch `feature/turboquant-kv-cache`.
-  - HEAD: `ed572867c` (TQ3_1S/TQ4_1S enum commit)
-  - upstream base now: `5f55650a7` (`mtmd: add lanczos resize method`)
+- **The rebase/merge is complete and COMMITTED.** The union of `feature/turboquant-kv-cache` and `upstream/master` is committed on branch `feature/turboquant-kv-cache-rebase` (the earlier branch `feature/turboquant-kv-cache` was left at `ed572867c`).
+  - HEAD: `f987a49f8` (`ci : keep fork's existing GitHub workflows, drop upstream CI delta`)
+  - upstream base in tree: `876a4321` (`vulkan: add POOL_1D op (#25431)`) — **re-rebased 2026-07-31 evening: 16 new upstream commits absorbed** since the previous base `5f55650a7` (see the re-rebase note below)
+  - Working tree is CLEAN except `REBASE_PLAN.md` (audit + re-rebase notes, uncommitted).
+  - The previously-uncommitted 170-file tree was committed in 7 logical commits on top of `ed572867c`: `53f2170da` (ggml core), `421f6a45c` (cuda), `58c733800` (sycl), `cb1cc8566` (vulkan/metal/hip), `d37584432` (llama/common/models), `2128110c2` (docs + rebase recipes), `7f05310b5` (ci workflows). `533e25c84` (`WIP: add TurboQuant KV cache types`, cherry-pick of fork `0b3744874`) and `ed572867c` predate them and are the branch's first two commits.
+- **RE-REBASED onto latest upstream (2026-07-31):** `git fetch upstream` showed the base `5f55650a7` was 16 commits behind the remote tip `876a4321`. All 9 TurboQuant commits were replayed onto `876a4321` (`git rebase --onto upstream/master 5f55650a7`). **Only one conflict**, in `src/llama-context.cpp` (the `d37584432` port commit), caused by upstream `69e62fc77` "llama : enforce the same K and V cache types for DeepSeek V4; enable FA if V cache is quantized (#25871)". Resolution: kept upstream's MLA/DEEPSEEK4 K==V enforcement and its quantized-V FA auto-enable/error; moved the TurboQuant turbo-type FA auto-enable BEFORE upstream's quantized-V check so turbo V + explicit `--flash-attn off` still auto-enables (fork semantics preserved); dropped the fork's now-dead duplicate quantized-V error. Pre-rebase tip preserved at `backup/rebase-tip-7f05310b5`. All other 8 commits replayed cleanly (incl. the SYCL and Vulkan commits overlapping upstream's new SYCL/vulkan work).
 - **The full build succeeds, 0 errors:**
   - `llama-cli` ✅ `llama-server` ✅ `llama-quantize` ✅ `test-backend-ops` ✅ `llama-bench` ✅
   - Command: `cmake --build build --target llama-cli llama-server llama-quantize test-backend-ops llama-bench -j $(nproc)`
   - Log: `/tmp/build-port16.log` (all `[100%] Built target ...`)
   - Binaries present in `build/bin/` (incl. `libggml-cuda.so`, `libllama.so.0.0.10202`)
 - **Smoke tests pass:**
-  - `llama-server --version` → `10202 (ed572867c)` ✅
+  - `llama-server --version` → `10225 (f987a49f8)` ✅ (re-verified 2026-07-31 after the re-rebase; earlier builds were `10202 (ed572867c)` / `10209 (7f05310b5)` — same tree content, new base)
   - `llama-bench` detects the CUDA device (`RTX 5090, compute capability 12.0`) ✅
   - `llama-cli --help`, `llama-quantize --help`, `llama-bench --help` all run ✅
   - `test-backend-ops -b CPU` runs ops (e.g. IM2COL_3D ... OK) ✅
@@ -40,15 +43,33 @@ All commit IDs below are verified exists in the local fork. **If upstream/master
   - `llama-bench` with turbo KV cache: `--cache-type-k q8_0 --cache-type-v turbo3 -ngl 99` (see §4)
   - `llama-cli` decode with `--cache-type-k q8_0 --cache-type-v turbo3/4` on a dsv4 model
   - DFlash speculative decoding path (`--spec draft-dflash`)
-- [ ] **`llama-quantize` type table does not list turbo/TQ types** — `llama-quantize --help` shows 0 turbo/TQ entries (only standard ftypes). The `ggml_type_from_name()` in `tools/llama-bench/llama-bench.cpp` has `turbo2/turbo3/turbo4` but NOT `tq3_1s/tq4_1s` (Group 1 verification failed on this point — see §1).
+- [ ] **`llama-quantize` CLI type table lacks named turbo/TQ entries** — `llama-quantize --help` shows only standard ftypes (no turbo2/3/4, no tq3_1s/tq4_1s). **NOTE (verified 2026-07-31): the underlying plumbing is COMPLETE** — `include/llama.h` has `LLAMA_FTYPE_MOSTLY_TQ3_1S = 43` / `MOSTLY_TQ4_1S = 44`, `src/llama-quant.cpp:834-835` maps ftype->ggml_type, `src/llama-model-loader.cpp:752-753` maps back. Only the named table in `tools/quantize/quantize.cpp` and `tools/llama-bench/llama-bench.cpp::ggml_type_from_name()` (has `turbo2/turbo3/turbo4`, missing `tq3_1s/tq4_1s`) lack entries. `llama-quantize --type 43/44` already works via the numeric fallback (`try_parse_ftype`).
 - [x] **DSPARK: RESTORED (2026-07-31)** — `deepseek4-dspark.cpp` exists in **no ref** in this repo (fork included); the earlier "MISSING" claim was incorrect. DSPARK is **upstream-merged code**: commit `84075273c` "spec: add DSpark speculative decoding (#25173)" (2026-07-28) is an ancestor of `upstream/master`. The fork itself has zero DSPARK, so the code exists here only as upstream code and is kept in this tree. All DSPARK code was **restored** from upstream across 13 files (see §7 Scope Decisions + Decision 4). Every file now matches upstream's `dspark` ref counts. `DGX-Spark` hardware support was never touched.
 - [ ] **`docs/KV-cache-quantization.md` is MISSING** from the merged tree (`docs/speculative.md` ✅ exists). Re-add or update user-facing KV-cache-quantization docs.
 - [ ] **`tests/test-turbo-quant.c` is MISSING** from the merged tree. Re-add or port the round-trip test (`fix: inverse WHT in test-turbo-quant.c round-trip (#59)`).
-- [ ] **Commit the work** — 170 files are currently modified/untracked and *uncommitted* (`git status --short` = 170). Nothing is staged. Once runtime validation passes, commit in logical groups.
-- [ ] **`common/console.cpp` termios gating** — verify the fork's non-TTY gating survived (listed in §3/§6; `tcsetattr` failure taxonomy).
-- [ ] **Metal / Vulkan / SYCL runtime validation** — the ported code compiles for CUDA/CPU; Metal (`ggml-metal.metal` TurboFlash), Vulkan (turbo3/4 FA + SET_ROWS), and SYCL template-instance files are present as untracked files but were **not runtime-validated** on this Linux/CUDA host.
+- [x] **Commit the work — DONE (2026-07-31)** — tree is clean; all 170 previously-modified/untracked files were committed in 7 logical commits on `feature/turboquant-kv-cache-rebase` (see STATUS above for the list). Nothing remains uncommitted.
+- [x] **`common/console.cpp` termios gating — VERIFIED survived (2026-07-31)** — POSIX init gated on `if (!simple_io)` at `common/console.cpp:135-151`, cleanup gated identically at `:159-166`; `tcgetattr`/`tcsetattr` only touch the terminal on the interactive path.
+- [ ] **Metal / Vulkan / SYCL runtime validation** — the ported code compiles for CUDA/CPU; Metal (`ggml-metal.metal` TurboFlash), Vulkan (turbo3/4 FA + SET_ROWS), and SYCL template-instance files are present (now tracked/committed) but were **not runtime-validated** on this Linux/CUDA host.
 - [ ] **Full `test-backend-ops` suite** — only a CPU subset was run. Run the complete suite (CPU + CUDA) to validate TQ3_1S/TQ4_1S kernels, SET_ROWS, and dsv4 KV ops.
 - [ ] **Baseline `f16` load check** — the §4 rule "f16 baseline must load cleanly before any turbo comparison" has not been executed.
+
+## Verification audit (2026-07-31, post-commit) — plan vs committed tree
+
+Re-verified the full plan against the committed tree (HEAD `7f05310b5`, tree clean). Everything checked below is evidence, not re-derivation; the only doc-vs-code mismatches found are the ones this document now corrects (noted inline below and in the groups they affect).
+
+**Verified matching (spot list):**
+- Types: `GGML_TYPE_TURBO2_0..TURBO4_0` = 43/44/47, `TQ3_1S/TQ4_1S` = 45/46 in `ggml/include/ggml.h`; type traits registered in `ggml/src/ggml.c:767-801+`; CPU vec_dot + traits in `ggml/src/ggml-cpu/ggml-cpu.c`; codec in `ggml/src/ggml-turbo-quant.c` (byte-identical to fork tip `59145a4fa`). `ggml-quants.c` contains NO turbo code (see §6 correction).
+- Ops: `GGML_OP_TURBO_WHT` in `ggml.h:578` + `ggml.c` name/compute; `ggml/include/ggml-rpc.h` `static_assert(GGML_OP_COUNT == 102)` with the TURBO_WHT/LIGHTNING_INDEXER/DSV4_HC_* comment.
+- CUDA: `convert.cu` dequant dispatch for all 5 types, `fattn-vec`/`fattn-mma-turbo`/`fattn-tile` instances in `CMakeLists.txt`, `mmvq-tq.cu`, `turbo-innerq.cu`, `turbo-wht.cu`, `set-rows.cu` — present. SYCL: `turbo-wht.cpp/.hpp`, `set_rows.cpp`, `fattn-vec.hpp`, `turbo-quant.hpp` + 24 instance files. Metal: `turbo-matrices.h`, `turbo-wht.h`, TurboFlash p1/p2 kernels, `TURBO_SPARSE_V` skip branch, `mul_mm_tq_rotated`. Vulkan: `dequant_tq4_1s.comp`, `dequant_turbo3_0.comp`, `mul_mat_vec_tq4_1s.comp`, `turbo_wht.comp` + FA dequant shaders.
+- Runtime wiring: `get_k_idx` both classes (`llama-kv-cache.cpp:1688/3181`), `auto_flid` (`llama-cparams.h:42`, init `llama-context.cpp:250`), `turbo-rotation-data.h`/`-32.h` restored, `TURBO_LAYER_ADAPTIVE` (`llama-kv-cache.cpp:317-341`), `TURBO_AUTO_ASYMMETRIC` gate (`:153`), inverse-WHT post-processing in `llama-graph.cpp` (FA + non-FA paths), single clean `llm_graph_input_dsv4*` copies in `llama-graph.h`, `selected_experts_in` restored, `common/speculative.cpp` upstream 3-arg-ctor impl + `static_assert(COUNT == 11)` (`:2411`).
+- DSPARK: `dflash.cpp` dspark ref count 20/20 vs upstream `5f55650a7` (diff = one removed blank line); `build_dspark_markov_head` (`:125`) + tensor block (`:46-54`); `llama-model.h:620-624` fields; `llama-arch.h/.cpp` tensors; `common/common.h` enum + `need_n_rs_seq` (`:392`); `speculative.cpp` map entry, `is_dspark`, n_max clamp, type_to_str, DSPARK factory case (`:2471-2474`); `gguf-py/gguf/constants.py` + `tensor_mapping.py`; `conversion/qwen.py:692-694` `Qwen3DSparkModel`; `conversion/__init__.py:56`; `docs/speculative.md` DSpark section + `--spec-type` list + table; `tools/server/README.md`, `tools/cli/README.md`.
+- `src/models/eagle3.cpp` byte-identical to fork tip (Decision 2 holds). `kv_cache_types` in `common/arg.cpp:311-314` (turbo2/3/4). ftype round-trip: `llama.h:159-160` -> `llama-quant.cpp:834-835` -> `llama-model-loader.cpp:752-753`. CI: `tqp-release.yml` + `tqp-linux-release.yml`. No conflict markers in `src/`, `common/`, `ggml/`, `tools/`.
+- Token-level fork-vs-HEAD sweep: 37 key files, regex `turbo|tq|wht|dspark|iswa|flid` identifiers from fork tip ALL present in HEAD — 0 missing tokens (no dropped TurboQuant code).
+- Build: `cmake --build build --target llama-cli llama-server llama-quantize test-backend-ops llama-bench` succeeds at HEAD (0 errors, binaries relinked); `llama-server --version` = `10209 (7f05310b5)`.
+
+**Doc corrections applied this session:** branch name + HEAD + committed-tree status (above), Group 1 GAP refined (plumbing complete, CLI table only), Group 2 `f82f4083d` nix = N/A (HEAD `nix/` is upstream's, no duplicate spirv-headers entry), Group 10 rotation env-knob names corrected, Group 11 ui commits marked NOT merged, §5 current-state line, §6 File Map rows (`ggml-quants.c`, `tools/quantize/`, `tools/ui/dist`, `console.cpp`), §8 risks (uncommitted-work risk resolved).
+
+**Post-rebase re-verification (2026-07-31 evening, HEAD `f987a49f8`):** token sweep re-run over the same 37 files — 0 missing fork tokens; the 5-target build passes on the new base (relink of `llama-context.cpp` consumers); `llama-server --version` = `10225 (f987a49f8)`. The conflict resolution in `src/llama-context.cpp` preserves both upstream `69e62fc77` behavior and the fork's turbo auto-enable (see STATUS re-rebase note).
 
 ## Decisions recorded during the merge (deliberate "reduce to minimum delta" choices)
 
@@ -56,6 +77,7 @@ All commit IDs below are verified exists in the local fork. **If upstream/master
 2. **`src/models/eagle3.cpp`: restored the fork's version wholesale** — the union merge had produced a broken hybrid (upstream's `target_layer_ids`/`n_embd_tgt` formula spliced onto fork's `LLM_KV_EAGLE3_*` keys). All 16 symbols the fork's file references were verified present in the merged tree. Note: upstream's `norm_before_fc` support in eagle3 was consequently dropped.
 3. **`auto_flid` was silently disabled in the merged tree** until this session added both the `bool auto_flid;` field in `src/llama-cparams.h` and the `cparams.auto_flid = true;` default init in `src/llama-context.cpp` (matches upstream exactly). Without this, fused Lightning Indexer would never auto-resolve.
 4. **DSPARK: RESTORED from upstream (2026-07-31).** DSPARK is **upstream-merged code**: commit `84075273c` "spec: add DSpark speculative decoding (#25173)" (2026-07-28) is an ancestor of `upstream/master`, verified via `git merge-base --is-ancestor` against the local ref tip `5f55650a` (2026-07-30); the earlier "uncommitted PR" belief was disproven. The fork itself has zero DSPARK, and `deepseek4-dspark.cpp` exists in **no ref** in this repo; DSPARK exists in this tree only as upstream code. All DSPARK code was restored across 13 files (Group 9); every file now matches upstream's `dspark` ref counts, and the 5-target build passes. **Distinguish from DGX-Spark:** `GGML_CUDA_CC_DGX_SPARK` / UMA handling in `ggml-cuda` is NVIDIA hardware support (compute capability 12.10 / GB10), upstream-merged, and was never touched. **Hedge:** no `dgx-spark` *model* code exists in any ref of this repo — only the NVIDIA hardware macro — so if "dgx-spark" refers to a draft model, it is neither present nor ported.
+5. **`src/llama-context.cpp` re-rebase conflict (2026-07-31 evening):** upstream `69e62fc77` (enforce same K/V cache types for MLA/DEEPSEEK4; auto-enable FA for quantized V, error on explicit DISABLED) collided with the fork's turbo FA auto-enable block in `llama_new_context_with_model`. Kept upstream's checks; moved the fork's turbo-type auto-enable before them (turbo V + explicit DISABLED still auto-enables, fork semantics); dropped the fork's duplicate quantized-V error (upstream's version is stricter and earlier).
 
 ---
 
@@ -71,7 +93,7 @@ The commits that add new `ggml_type` enum values and `llama-quantize` support.
 - [x] `6c9cfb1be` `experiment: split 2x4-entry constant LUT for M1 decode fix`
 - [x] `5e6277b6f` `fix: add turbo3/turbo4 cache types to llama-bench arg parser` — `turbo2/turbo3/turbo4` present in `tools/llama-bench/llama-bench.cpp:503-509`
 - [x] `f3f7c3c4b` `feat: InnerQ per-channel equalization + turbo2 64-group fallback`
-- [ ] **GAP**: `tq3_1s`/`tq4_1s` are NOT in `llama-bench.cpp::ggml_type_from_name()` and NOT in `llama-quantize --help` output. Add them to complete Group 1.
+- [ ] **GAP (refined 2026-07-31):** `tq3_1s`/`tq4_1s` are NOT in `llama-bench.cpp::ggml_type_from_name()` and NOT in the `llama-quantize` CLI type table (`tools/quantize/quantize.cpp`). **Plumbing is complete** (see STATUS): `llama.h` ftype 43/44 + both mapping directions exist, and `--type 43/44` works via numeric fallback. Remaining work is two named-table rows (bench parser + quantize CLI list).
 
 Rebuild verification:
 ```bash
@@ -82,7 +104,7 @@ llama-quantize --help | grep -E 'turbo|TQ'                        # ⚠️ curre
 ---
 
 ### Group 2 — GGML Core + WHT Ops
-**STATUS: ✅ COMPLETED (code merged; `ggml/src/ggml-turbo-quant.c`, WHT op, turbo-quant headers present; SYCL `turbo-wht.cpp` present as untracked)**
+**STATUS: ✅ COMPLETED (code merged; `ggml/src/ggml-turbo-quant.c`, WHT op, turbo-quant headers present; SYCL `turbo-wht.cpp` tracked/committed)**
 
 Must exist before runtime wiring or CUDA dispatch.
 
@@ -90,7 +112,7 @@ Must exist before runtime wiring or CUDA dispatch.
 - [x] `377727552` `feat: replace dense 128x128 matvec with Fast Walsh-Hadamard rotation #26`
 - [x] `7173be941` `perf: optimized turbo3 dequant — eliminates context scaling regression`
 - [x] `a1fafdc44` `fix(meta): add GGML_OP_TURBO_WHT to tensor-split path (#196)` — GGML_OP_COUNT assert updated (ggml-rpc.h handled in this session)
-- [x] `f82f4083d` `fix(nix): remove duplicate spirv-headers entry (#195)`
+- [x] `f82f4083d` `fix(nix): remove duplicate spirv-headers entry (#195)` — **N/A in final tree (2026-07-31):** HEAD `nix/` is upstream's untouched; no duplicate `spirv-headers` entry exists there. Fork's nix changes were not ported (upstream nix kept).
 - [x] `bf590c723` `fix(turbo-quant): add forward declaration for turbo_cpu_fwht_inverse`
 
 Pitfall: if `tools/llama-bench/llama-bench.cpp:ggml_type_from_name()` in upstream already maps these enums, Group 1 is the only place you need parser patches.
@@ -189,7 +211,7 @@ TurboQuant-specific FA kernels for CUDA/HIP/Metal/Vulkan/SYCL. **⚠️ HIGH CON
 ---
 
 ### Group 6 — Vulkan + Vulkan-Turbo-FA
-**STATUS: ⚠️ MERGED (untracked shader files present: `dequant_tq4_1s.comp`, `dequant_turbo3_0.comp`, `mul_mat_vec_tq4_1s.comp`, `turbo_wht.comp`), NOT runtime-validated on this host**
+**STATUS: ⚠️ MERGED (shader files tracked/committed: `dequant_tq4_1s.comp`, `dequant_turbo3_0.comp`, `mul_mat_vec_tq4_1s.comp`, `turbo_wht.comp`), NOT runtime-validated on this host**
 
 Apply only if Vulkan backend is in scope.
 
@@ -299,19 +321,19 @@ These are behavioral toggles and runtime paths that must survive rebase even tho
 | Boundary V | `src/llama-kv-cache.cpp` boundary-first/last layer assignments | Append to upstream `llama_kv_cache` constructor | ✅ merged |
 | Sparse V skip (`TURBO_SPARSE_V=0` opt-out) | `ggml/src/ggml-cuda/fattn-vec.cuh`, `ggml/src/ggml-metal/ggml-metal.metal` | Re-add skip branch if removed | ✅ merged |
 | TurboFlash / Metal FA | `ggml/src/ggml-metal/*` | Keep additive | ✅ merged (unvalidated) |
-| Upstream rotation override (`ROT_OVERRIDE` / `TURBO_ROTATION_DISABLE`) | `src/llama-kv-cache.cpp` rotation env-knob path | Default OFF (TurboQuant manages rotation) | ✅ merged |
+| Upstream rotation override (env: `LLAMA_ATTN_ROT_K_OVERRIDE` / `LLAMA_ATTN_ROT_V_OVERRIDE`, hard lock-out `LLAMA_ATTN_ROT_DISABLE`) | `src/llama-kv-cache.cpp` rotation env-knob path (`:551-607`) | Default OFF (TurboQuant manages rotation) | ✅ merged, verified |
 
 ---
 
 ### Group 11 — Server / Bench CLI / UI / Docs / CI Hygiene
-**STATUS: ⚠️ PARTIAL — server/ui/bench items merged; docs/KV-cache-quantization.md and tests/test-turbo-quant.c MISSING**
+**STATUS: ⚠️ PARTIAL — server/bench items merged; fork ui commits NOT merged (HEAD `tools/ui/` == upstream, 2026-07-31); docs/KV-cache-quantization.md and tests/test-turbo-quant.c MISSING**
 
 Apply last; lowest conflict risk.
 
 - [x] `514c6c768` `server: gate speculative init/warnings without dropping seq_rm probe`
-- [x] `f27268914` `ui: constrain chat inset height so long messages can scroll`
-- [x] `c09b7c879` `ui: don't trust a partial dist dir; validate full asset set before embedding`
-- [x] `3a45046f9` `ui: validate complete asset set in HF download before proceeding`
+- [ ] `f27268914` `ui: constrain chat inset height so long messages can scroll` — **NOT MERGED (2026-07-31):** HEAD `tools/ui/` is byte-identical to upstream `5f55650a7`; the fork's ui tweaks were dropped. Skipped per the upstream-preference rule; revisit only if the chat-inset behavior matters for the TurboQuant+ release.
+- [ ] `c09b7c879` `ui: don't trust a partial dist dir; validate full asset set before embedding` — **NOT MERGED** (see above). Note: `tools/ui/dist/` is gitignored in both fork and HEAD; `embed.cpp` falls back to an empty asset table without it.
+- [ ] `3a45046f9` `ui: validate complete asset set in HF download before proceeding` — **NOT MERGED** (see above).
 - [x] `4503343ff` `docs: point prebuilt table at tqp-v0.3.0`
 - [x] `bb81d3334` `docs: add TurboQuant+ prebuild links`
 - [x] `558c6b78e` `docs: add Linux prebuild links`
@@ -325,9 +347,7 @@ Apply last; lowest conflict risk.
 
 ## 2. Verified Cherry-Pick Recipe
 
-> **NOTE (2026-07-31): the rebase was performed as a union merge, not via this
-> cherry-pick sequence. This recipe is retained as historical reference and for
-> replaying any missing pieces (e.g. the Group 1 TQ CLI gap, the docs/test-turbo-quant gaps).**
+> **NOTE (2026-07-31):** the rebase was performed as a union merge of the fork tree onto upstream, then committed as a linear series: `533e25c84` (WIP cherry-pick of fork `0b3744874`) -> `ed572867c` -> six port commits -> docs -> ci. This recipe is retained as historical reference and for replaying any missing pieces (e.g. the Group 1 TQ CLI table rows, the docs/test-turbo-quant gaps, the Group 11 ui commits).
 
 ```bash
 set -euo pipefail
@@ -469,7 +489,7 @@ If a conflict affects the function signature, struct layout, or call graph of up
 - Commit: `1fd6dfe9f3d4b69cce101d832339fbda2d14b056`
 - Confidence: medium (squash-merges obscure true ancestor)
 - Confirm post-construction with: `git merge-base HEAD upstream/master`
-- Current state: branch `feature/turboquant-kv-cache`, HEAD `ed572867c`, upstream base `5f55650a7`
+- Current state: branch `feature/turboquant-kv-cache-rebase`, HEAD `f987a49f8`, upstream base `876a4321` (fetched + re-rebased 2026-07-31), tree clean except `REBASE_PLAN.md`.
 
 ---
 
@@ -478,7 +498,7 @@ If a conflict affects the function signature, struct layout, or call graph of up
 | File | Reason | Status |
 |------|--------|--------|
 | `ggml/include/ggml.h` | `ggml_type` enum entries for turbo quantizers + TQ3_1S/TQ4_1S | ✅ present (types 43-47) |
-| `ggml/src/ggml-quants.c` | Quantizer tables, codec symbols | ✅ present |
+| `ggml/src/ggml-quants.c` | **Correction (2026-07-31): no turbo code here.** Quantizer tables/type traits live in `ggml/src/ggml.c` (`:767-801` etc.), CPU vec_dot + traits in `ggml/src/ggml-cpu/ggml-cpu.c`, codec entry points in `ggml/src/ggml-turbo-quant.c`, declarations in `ggml/src/ggml-quants.h:109-119+`. All present. | ✅ present (in ggml.c / ggml-cpu.c / ggml-turbo-quant.c) |
 | `ggml/src/ggml-turbo-quant.c` | WHT, codec entry points | ✅ present |
 | `ggml/src/ggml-cuda/concat.cu` | Contiguity/quantized concat for turbo tensors | ✅ present |
 | `ggml/src/ggml-cuda/set-rows.cu` | SET_ROWS turbo dispatch | ✅ present |
@@ -495,13 +515,13 @@ If a conflict affects the function signature, struct layout, or call graph of up
 | `src/models/dflash.cpp` + `models.h` | DFlash draft path | ✅ present |
 | `src/models/deepseek4-dspark.cpp` | DSPARK draft path | ✅ **RESTORED** (never existed in any ref; kept as upstream code in `dflash.cpp`, 2026-07-31) |
 | `common/speculative.cpp` | Draft-type enum plumbing | ✅ fixed this session |
-| `tools/llama-quantize/*` | Convert/quant entry + calibration gate | ⚠️ type table missing TQ entries |
+| `tools/quantize/quantize.cpp` | Convert/quant entry + calibration gate | ⚠️ named type table lacks TQ3_1S/TQ4_1S/turbo entries (ftype plumbing complete; numeric `--type 43/44` works) |
 | `tools/llama-bench/llama-bench.cpp` | `ggml_type_from_name()` token→enum | ⚠️ has turbo2/3/4, missing tq3_1s/tq4_1s |
 | `gguf-py/gguf/*.py` | DFlash tensor mappings + bonus-anchor keys | ✅ DSPARK mappings restored |
 | `conversion/qwen.py` / `conversion/__init__.py` | DSpark/DSPARK mappings | ✅ `DSparkModel`/`Qwen3DSparkModel` restored |
-| `common/console.cpp` | termios gating for non-TTY scripted runs | ⚠️ verify gating survived |
+| `common/console.cpp` | termios gating for non-TTY scripted runs | ✅ verified 2026-07-31 — POSIX block gated on `!simple_io` (`:135-151`, cleanup `:159-166`) |
 | `docs/KV-cache-quantization.md`, `docs/speculative.md` | User-facing instructions | ⚠️ KV-cache-quantization.md MISSING; speculative.md ✅ |
-| `tools/ui/dist/*` | Prebuilt static assets | ✅ present |
+| `tools/ui/dist/*` | Prebuilt static assets | ⚠️ **not in tree (2026-07-31)** — gitignored in both fork and HEAD (`tools/ui/.gitignore:12`); produced at release-build time by `embed.cpp` (empty asset table fallback). Fork's ui source tweaks (Group 11) were NOT ported; HEAD `tools/ui/` == upstream. |
 | `.github/workflows/*` | TurboQuant+ release workflow | ✅ present |
 | `tests/test-turbo-quant.c` | WHT round-trip test | ❌ **MISSING** |
 
@@ -545,8 +565,8 @@ If a conflict affects the function signature, struct layout, or call graph of up
 
 - **Validation is the bottleneck, not authorship.** Expect backend op failures from the Turboquant failure taxonomy.
 - **Cross-port drift.** Do not port `src/models` by whole-file copy; use backward-targeted patch application.
-- **`upstream/master` moves.** Lock base SHA `e9fa0781f1` at the start. (Current upstream base in tree: `5f55650a7`.)
+- **`upstream/master` moves.** Lock base SHA `e9fa0781f1` at the start. (Current upstream base in tree: `876a4321`, fetched + re-rebased 2026-07-31.)
 - **Remote parity drift.** A clean tree on `dspark` or any local branch is not proof of remote parity. Confirm with `rev-parse` / `ls-remote` SHA equality before declaring sync.
-- **NEW — 170 files uncommitted.** Everything above lives in the working tree. Commit after runtime validation, in logical groups.
+- **RESOLVED — work committed.** The 170-file uncommitted-tree risk is gone: everything was committed in 7 logical commits on `feature/turboquant-kv-cache-rebase` (tree clean, 2026-07-31). Remaining risks are runtime validation only.
 - **NEW — runtime-untested.** Build/smoke tests pass, but no real-model inference, no turbo-KV-cache decode, no draft-model run has been executed yet.
 - **RESOLVED — DSPARK is upstream-merged code.** The prior risk (DSPARK dropped on sync) is resolved: commit `84075273c` "spec: add DSpark speculative decoding (#25173)" (2026-07-28) is an ancestor of `upstream/master` (verified via `git merge-base --is-ancestor` against ref tip `5f55650a`, 2026-07-30), so DSPARK is merged upstream and is kept in this tree. `DGX-Spark` (NVIDIA hardware support) is separate and retained.
