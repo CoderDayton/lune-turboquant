@@ -1920,15 +1920,21 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
         return;
     }
-
-    // TQ weight types: fused dp4a path (decode) or runtime q8_0 conversion + cuBLAS (prefill)
+    // TQ weight types: fused dp4a path (decode) or runtime q8_0 conversion + cuBLAS (prefill).
     // Note: upstream removed the fork's `!split` guard, so TQ weights on multi-GPU split layouts
     // are routed to the fused kernel like any other batch (the split layout is not specially handled).
-    if (is_tq_weight && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
+    //
+    // The fused TQ kernels index src1/dst as flat contiguous buffers (no nb[] stride handling in
+    // mmvq-tq.cu), so permuted/viewed activations (e.g. DeepSeek-V4 MLA projections) must take the
+    // stride-aware cuBLAS fallback below, which dequantizes TQ via ggml_get_to_fp16_cuda.
+    const bool tq_fast_path_ok = ggml_is_contiguous(src1) && ggml_is_contiguous(dst);
+    if (is_tq_weight && tq_fast_path_ok && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
+        // Handles ne[1]=1 (decode) and ne[1]<=8 (multi-token / speculative decoding)
         ggml_cuda_mul_mat_tq(ctx, src0, src1, dst);
         return;
     }
-    if (is_tq_weight && src0->type == GGML_TYPE_TQ4_1S) {
+    if (is_tq_weight && tq_fast_path_ok && src0->type == GGML_TYPE_TQ4_1S) {
+        // Large prefill: runtime TQ4_1S -> q8_0 scratch conversion + cuBLAS
         ggml_cuda_mul_mat_tq4_1s_cublas(ctx, src0, src1, dst);
         return;
     }
