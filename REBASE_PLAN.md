@@ -83,6 +83,22 @@ Re-verified the full plan against the committed tree (HEAD `7f05310b5`, tree cle
 - DFlash: `--spec-type draft-dflash` with Qwen3.6-35B-A3B-DFlash-Q8_0 draft + 35B-A3B Q5_K_S main, `-ctv turbo3 -c 1024 -n 24` — generated a correct answer, clean exit. (Crash before fix #3.)
 - test-turbo-quant: passes (see above). test-backend-ops CUDA SET_ROWS/SOFT_MAX: no matching cases in upstream matrix ("Skipping" by design).
 
+## Full parity sweep (2026-08-01) — TheTom fork + upstream vs this tree
+
+**Upstream (ggml-org/llama.cpp):** local `upstream/master` == remote tip `876a4321`; 0 new commits; fully contained in this branch. Op enum: ours = upstream 101 + exactly `GGML_OP_TURBO_WHT` (upstream already merged `LIGHTNING_INDEXER` + `DSV4_HC_*`; the ggml-rpc.h comment was stale and is corrected). Type enum: ours = upstream 43 + exactly the 5 TurboQuant types (43-47).
+
+**Fork (TheTom/llama-cpp-turboquant):** the fork's `feature/turboquant-kv-cache` (its default branch) and `master` are both **2 commits past** our backup tip `59145a4fa`:
+- `11a8377bd` vulkan turbo3 wave64 ballot fix (#241) — **PORTED (2026-08-01)** to `copy_to_quant.comp` (was missing: our tree had the buggy `.x`-shift packing).
+- `0b059740a` HIP FA pool bypass — already in tree (plan Group 3 `0757ff4ee`).
+
+**File inventory:** 84 fork files absent from HEAD — ALL verified zero TurboQuant tokens: upstream-removed/refactored files (hexagon htp, fattn-wmma, clamp/sin/cos/sqrt/square shaders, json/regex-partial, unary_gelu, export-graph-ops, get-model, ui sidebar), fork-dev artifacts (autoresearch scripts, bench-smem, quality-gate, TURBOQUANT_UPSTREAM_MERGE.md, rocm test notes, dsv4-flash jinja), and fork's `ggml-cpu/dsv4-ops.cpp` (content merged into `ggml-cpu/ops.cpp`).
+
+**Two-way token sweep (all 2,988 common files):** forward gaps (fork tokens missing in HEAD) found ONLY in fork test files + README/scripts — **tests now ported** (see below); README/scripts are fork-branding/dev artifacts intentionally not ported. Reverse gaps (HEAD tokens absent in fork) = DSPARK only, expected (upstream-merged, fork has none).
+
+**Tests ported (2026-08-01):** `test-backend-ops.cpp` — TURBO_WHT fwd/inv + round-trip, SET_ROWS turbo3/turbo4/TQ4_1S round-trips, TQ4_1S mul_mat sweeps, TQ4_1S tolerance case (suite: 12,936 OK / 0 FAIL; turbo3/4 SET_ROWS reported unsupported on CUDA — identical to fork, those tests target Vulkan). `test-quantize-fns.cpp` — rotated-domain buffer sizing, turbo KV skip with rationale, TQ3_1S thresholds.
+
+**Verdict:** all fork TurboQuant content (runtime, tests, docs-of-record) is present; upstream is fully absorbed; the only deviations are documented intentional ones (ui commits, fork branding/scripts, eagle3 fork-version, upstream-preference calls).
+
 ## Decisions recorded during the merge (deliberate "reduce to minimum delta" choices)
 
 1. **`common/speculative.cpp`: kept upstream's `common_speculative_impl_draft_dflash`** (3-arg ctor with `type` param) and **dropped the fork's older copy** (with `StashedG`/`m_use_deferred` deferred-KV-injection fields). The merged `common/common.h` and the impl factory are upstream-driven. Whole-tree grep confirmed **zero** external references to the dropped `StashedG`/`m_use_deferred`/`MAX_STASH`. *(2026-07-31: the DSPARK factory case that uses the 3-arg ctor was restored — see §7 Scope Decisions; the `type` ctor param defaults to DFLASH except in the restored DSPARK factory case, kept for upstream parity.)*
