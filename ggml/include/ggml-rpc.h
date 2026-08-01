@@ -11,7 +11,7 @@ extern "C" {
 #define RPC_PROTO_PATCH_VERSION    3
 
 #ifdef  __cplusplus
-// 102 = upstream 97 + TURBO_WHT + LIGHTNING_INDEXER + DSV4_HC_COMB + DSV4_HC_PRE + DSV4_HC_POST
+// 102 = upstream 101 + TURBO_WHT (upstream already has LIGHTNING_INDEXER and DSV4_HC_*)
 static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT has changed - update RPC_PROTO_PATCH_VERSION");
 #endif
 
