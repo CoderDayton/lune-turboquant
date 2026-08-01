@@ -11798,6 +11798,8 @@ template [[host_name("kernel_get_rows_iq1_s")]]   kernel get_rows_q_t kernel_get
 template [[host_name("kernel_get_rows_iq1_m")]]   kernel get_rows_q_t kernel_get_rows_q<block_iq1_m,   QK_NL, dequantize_iq1_m>;
 template [[host_name("kernel_get_rows_iq4_nl")]]  kernel get_rows_q_t kernel_get_rows_q<block_iq4_nl,  2,     dequantize_iq4_nl>;
 template [[host_name("kernel_get_rows_iq4_xs")]]  kernel get_rows_q_t kernel_get_rows_q<block_iq4_xs,  QK_NL, dequantize_iq4_xs>;
+template [[host_name("kernel_get_rows_tq3_1s")]]  kernel get_rows_q_t kernel_get_rows_q<block_tq3_1s,  2, dequantize_tq3_1s>;
+template [[host_name("kernel_get_rows_tq4_1s")]]  kernel get_rows_q_t kernel_get_rows_q<block_tq4_1s,  2, dequantize_tq4_1s>;
 
 template<typename TS, typename TI, typename block_q, void (*quantize_func)(device const float *, device block_q &)>
 kernel void kernel_set_rows_q32(
@@ -12140,6 +12142,19 @@ template [[host_name("kernel_set_rows_f32_i64_q5_1")]]   kernel set_rows_q32_t k
 template [[host_name("kernel_set_rows_f32_i32_q5_1")]]   kernel set_rows_q32_t kernel_set_rows_q32<float, int32_t, block_q5_1,   quantize_q5_1>;
 template [[host_name("kernel_set_rows_f32_i64_iq4_nl")]] kernel set_rows_q32_t kernel_set_rows_q32<float, int64_t, block_iq4_nl, quantize_iq4_nl>;
 template [[host_name("kernel_set_rows_f32_i32_iq4_nl")]] kernel set_rows_q32_t kernel_set_rows_q32<float, int32_t, block_iq4_nl, quantize_iq4_nl>;
+
+// TurboQuant set_rows instantiations (128-element groups: 4x32-element blocks for turbo3, dedicated kernels for turbo2/4)
+typedef decltype(kernel_set_rows_turbo<int64_t, block_turbo3_0, QK_TURBO3, quantize_turbo3_0>) set_rows_turbo3_t;
+template [[host_name("kernel_set_rows_f32_i64_turbo3")]] kernel set_rows_turbo3_t kernel_set_rows_turbo<int64_t, block_turbo3_0, QK_TURBO3, quantize_turbo3_0>;
+template [[host_name("kernel_set_rows_f32_i32_turbo3")]] kernel set_rows_turbo3_t kernel_set_rows_turbo<int32_t, block_turbo3_0, QK_TURBO3, quantize_turbo3_0>;
+
+typedef decltype(kernel_set_rows_turbo2<int64_t>) set_rows_turbo2_t;
+template [[host_name("kernel_set_rows_f32_i64_turbo2")]] kernel set_rows_turbo2_t kernel_set_rows_turbo2<int64_t>;
+template [[host_name("kernel_set_rows_f32_i32_turbo2")]] kernel set_rows_turbo2_t kernel_set_rows_turbo2<int32_t>;
+
+typedef decltype(kernel_set_rows_turbo4<int64_t>) set_rows_turbo4_t;
+template [[host_name("kernel_set_rows_f32_i64_turbo4")]] kernel set_rows_turbo4_t kernel_set_rows_turbo4<int64_t>;
+template [[host_name("kernel_set_rows_f32_i32_turbo4")]] kernel set_rows_turbo4_t kernel_set_rows_turbo4<int32_t>;
 
 kernel void kernel_diag_f32(
         constant ggml_metal_kargs_diag & args,

@@ -1,7 +1,7 @@
 # TurboQuant Rebase Plan — `feature/turboquant-kv-cache-rebase` (from `feature/turboquant-kv-cache`) → latest `upstream/master`
 
 Source of truth: the exact refs recorded in the current parity audit below.
-- Local HEAD: `edcbe53c5` (`feature/turboquant-kv-cache-rebase`)
+- Local HEAD: `71c3cc95d7a4` (`feature/turboquant-kv-cache-rebase`)
 - Upstream/master: `876a4321163249c43ca4e986818fab5ab081f282`
 - TurboQuant fork: `8a891f4b566efdbd3cea92fafee3227a0a267683` (`giveen/llama-cpp-turboquant`, `feature/turboquant-kv-cache`)
 - Fork backup: `59145a4fa493695410438ea9a0071d0939c57619`
@@ -14,6 +14,140 @@ All commit IDs below are verified exists in the local fork. **If upstream/master
 # STATUS — 2026-07-31: THREE-WAY PARITY FIXES APPLIED; VALIDATION IN PROGRESS
 
 > **This section supersedes the checklist below. Read this first.**
+
+## Strict commit-level parity audit (2026-07-31, requirement = "ALL feature commits ported unless upstream already has same code")
+
+- **Scope used for this audit:**
+  - `HEAD` = `71c3cc95d7a4`
+  - `upstream/master` = `876a43211632`
+  - `giveen/feature/turboquant-kv-cache` = `8a891f4b566e`
+- **Exact git results:**
+  - `git rev-list --left-right --count HEAD...giveen/feature/turboquant-kv-cache` -> `605 366`
+  - `git rev-list --left-right --count HEAD...upstream/master` -> `22 0`
+  - `git cherry -v HEAD giveen/feature/turboquant-kv-cache | wc -l` -> `323`
+- **Interpretation:**
+  - Upstream is fully absorbed (`0` commits missing from upstream into HEAD).
+  - The TurboQuant feature branch is **not** fully ported at strict commit/patch-equivalence level (`323` commits in fork branch not patch-equivalent in HEAD).
+- **Current requirement status:** **NOT CONFIRMED** for "ALL commits ported unless upstream already does the same code".
+- **Breakdown of those 323 non-equivalent feature commits (subject-prefix bucket):**
+  - `fix`: 47
+  - `feat`: 34
+  - `perf`: 17
+  - `experiment`: 27
+  - `docs`: 25
+  - `ci`: 6
+  - `wip`: 2
+  - `cleanup`: 1
+  - `chore`: 1
+  - `other/unprefixed`: 163
+
+This means functional parity may be high in key runtime paths, but the stronger "all feature-branch commits are ported or upstream-equivalent" criterion is still open and needs a commit-by-commit resolution ledger.
+
+## Complete commit audit artifact (2026-07-31)
+
+Generated full ledger:
+- `rebase-diff-recipes/turboquant-complete-audit.tsv`
+
+Method used:
+- Enumerated all commits in `1fd6dfe9f3d4..giveen/feature/turboquant-kv-cache`.
+- For each commit, captured file list and tested reverse-patch applicability on HEAD (`git show <sha> | git apply --reverse --check -`) to detect whether the patch content is already present in the current tree.
+- If reverse-apply failed, checked `git cherry -v HEAD giveen/feature/turboquant-kv-cache` for patch-equivalent commits already represented in local history.
+- Added per-commit classification and code-touch flag.
+
+Complete-audit counts (all 366 feature-branch commits):
+- `PORTED_EXACT_TREE`: 77
+- `PORTED_PATCH_EQ_HISTORY`: 92
+- `UNRESOLVED_CODE`: 155
+- `UNRESOLVED_NONCODE`: 42
+
+Non-merge commit counts (326 commits; merge commits removed to reduce double counting):
+- `PORTED_EXACT_TREE`: 77
+- `PORTED_PATCH_EQ_HISTORY`: 73
+- `UNRESOLVED_CODE`: 150
+- `UNRESOLVED_NONCODE`: 26
+
+Additional checks:
+- For all `UNRESOLVED_CODE` commits, touched files still exist in the current tree (none were pure file-deletion false positives).
+- `UNRESOLVED_CODE` hotspots are concentrated in Metal/CUDA/Vulkan and KV/graph paths (e.g. `ggml/src/ggml-metal/ggml-metal.metal`, `src/llama-kv-cache.cpp`, `ggml/src/ggml-cuda/fattn.cu`, `src/llama-graph.cpp`).
+- Reverse-apply against an `upstream/master` worktree shows these unresolved commits are not trivially present in upstream tree either (all 197 unresolved are `not_in_upstream_tree` by reverse-apply).
+
+Correctness checks executed for currently integrated TurboQuant paths:
+- Built targets: `test-quantize-fns`, `test-backend-ops`, `test-turbo-quant`, `llama-bench`.
+- Exit codes from the completed run: `test-quantize-fns=0`, `test-turbo-quant=0`, `test-backend-ops-cpu=0`.
+- Log scans found no `FAIL` / `ERROR` / assertion/segfault markers in:
+  - `/tmp/tq-audit/test-quantize-fns.log`
+  - `/tmp/tq-audit/test-turbo-quant.log`
+  - `/tmp/tq-audit/test-backend-ops-cpu.log`
+
+Interpretation:
+- The audit is complete in coverage (every feature-branch commit classified), but strict parity is still open due the unresolved-code bucket.
+- To close strict parity, each `UNRESOLVED_CODE` row needs one explicit disposition: `PORTED_DIFFERENTLY`, `UPSTREAM_EQUIVALENT`, or `INTENTIONAL_DROP` with file-level evidence.
+
+### Final closure pass (completed)
+
+- The ledger now includes per-row `disposition` and `evidence` columns for every commit, including all `UNRESOLVED_CODE` rows.
+- File: `rebase-diff-recipes/turboquant-complete-audit.tsv`
+- `UNRESOLVED_CODE` rows annotated: `155 / 155` (no missing disposition/evidence fields).
+- Final `UNRESOLVED_CODE` disposition counts:
+  - `PORTED_DIFFERENTLY`: 115
+  - `UPSTREAM_EQUIVALENT`: 0
+  - `INTENTIONAL_DROP`: 40
+
+Closure interpretation:
+- Commit-by-commit annotation work is complete.
+- Strict literal requirement (`all feature commits ported unless upstream-equivalent`) remains **NOT CONFIRMED** because 40 commits are explicitly marked `INTENTIONAL_DROP` and 0 are `UPSTREAM_EQUIVALENT`.
+- Functional runtime parity may still be acceptable for the merge objective, but it is no longer represented as literal all-commit parity.
+
+---
+
+## Complete audit — code presence + correctness (2026-08-01, HEAD `71c3cc95d`)
+
+> Supersedes the "strict parity remains open" note above: every `UNRESOLVED_CODE` commit has now been dispositioned with file-level evidence by a six-subsystem review (ggml-core/CPU, CUDA, Metal, Vulkan, llama-runtime, common/tools/tests). This section records the results and the resolution ledger for the 7 port regressions found.
+
+### Method
+- Per-commit presence: `git show <sha>` per unresolved commit, then grep/byte-diff of the introduced identifiers against the working tree.
+- Per-file comparison fork tip (`8a891f4b5`) vs HEAD: 62 files byte-identical, 85 differ (deltas = upstream drift + the 7 regressions below), 20 fork-only dev artifacts (autoresearch, bench-smem, quality-gate scripts, investigation docs) intentionally absent.
+- Turbo-token sweep (turbo/tq/wht/fwht/centroid/rotation identifiers) over all 167 files: only 3 files had missing tokens -> all three investigated and confirmed as regressions (findings 2-4).
+- Runtime verification at HEAD before fixes: build OK; `test-turbo-quant` (turbo3 MSE=0/Cosine=1.0, turbo4 Cosine=0.9956) OK; `test-quantize-fns` OK; `test-backend-ops` CPU 17,825/17,825 OK, CUDA0 13,107/13,107 OK; end-to-end llama-cli decode on Qwen3-8B-Q8_0: f16 983/171, turbo2 865/162, turbo3 812/152, turbo4 794/157 t/s, coherent output, clean exit.
+
+### Verdict summary
+- All 155 `UNRESOLVED_CODE` commits accounted for: 153 present in HEAD (2 of them — `3eca09aec`, `a5a0f7b86` — are fork-internal reverts: the fork reverted them in `687b184f35`, so HEAD == fork tip is the correct end state), 0 absent, 2 superseded in-fork (q8_0 head-dim fallbacks `df33248d2`/`fb2d86d31` replaced by zero-padding `d158db5c6` before fork tip).
+- Turbo codec (`ggml-turbo-quant.c`), CPU paths, CUDA kernels (10 files byte-identical), SYCL (5 commits ported), llama runtime wiring (38 commits, zero coding errors) all verified correct.
+
+### The 7 port regressions (resolution ledger)
+
+| # | Severity | Location | Finding | Resolution |
+|---|----------|----------|---------|------------|
+| 1 | BUG (crash, reproduced) | `ggml/src/ggml-cuda/ggml-cuda.cu:1911-1914` | TQ weight dispatch: `ggml_cuda_should_use_mmvq` (no TQ exclusion) runs before the fork's fused-TQ branch; TQ3_1S (and TQ4_1S with `GGML_TQ_NATIVE=1`) hits `GGML_ABORT` in `mmvq.cu:1148`. Fork's `!is_tq_weight` guard (`fork ggml-cuda.cu:2787`) dropped in the upstream rewrite of `ggml_cuda_mul_mat`. Default TQ4_1S masked by load-time q8_0 conversion. | **FIXED** — restored `!is_tq_weight` exclusion before the mmvq branch; verified `GGML_TQ_NATIVE=1` TQ4_1S mul_mat no longer aborts |
+| 2 | CRITICAL (nil-pipeline crash) | `ggml/src/ggml-metal/ggml-metal.metal:11838/11926/11998` + `device.cpp:163-180` | `kernel_set_rows_turbo/turbo2/turbo4` defined but never `[[host_name]]`-instantiated; HEAD getter requests `kernel_set_rows_f32_i64_turbo3` (upstream naming) which exists nowhere -> NULL deref on every turbo KV write on Metal. Fork had 6 instantiations (`fork:12356-12371`). | **FIXED** — re-added 6 instantiations under HEAD naming (`kernel_set_rows_f32_i{32,64}_turbo{2,3,4}`) |
+| 3 | CRITICAL (nil-pipeline crash) | `ggml/src/ggml-metal/ggml-metal.metal:11770-11800` | `kernel_get_rows_tq3_1s/tq4_1s` instantiations dropped (`fork:12307-12308`); GET_ROWS on TQ tensors on Metal -> NULL deref. | **FIXED** — re-added 2 instantiations |
+| 4 | CRITICAL (abort) | `ggml/src/ggml-vulkan/ggml-vulkan.cpp:5357-5367` | set_rows pipeline registration loop lacks TURBO2_0/3_0/4_0 (`fork:4952-4954`); shaders ARE generated (`vulkan-shaders-gen.cpp:848-850`) and bodies exist in `copy_to_quant.comp` (incl. wave64 ballot fix), but no `vk_pipeline` is created -> `GGML_ABORT` on every turbo KV write on Vulkan. | **FIXED** — re-added 3 registration lines with `require_full_subgroups=true, subgroup_size=32` |
+| 5 | MEDIUM (feature loss) | `tools/server/server-context.cpp` | Fork's checkpoint sidecar (`eaf98e61`: PKCL magic, `.ckpt` save/load) and parallel-restore gating (`d6ae83f6` server half: `prompt_checkpoint_restored`) absent; upstream also lacks them; drop was undocumented. Cold-restart `action=restore` still discards restored state. | **FIXED** — ported both commits onto HEAD's refactored server (sidecar helpers + save/restore hooks; flag field/reset/batch-exclusion/restore-set/clear; the fork's per-token `break` adapted to HEAD's loop structure as a `prompt_checkpoint_restored` break inside the fill loop). Verified: server builds, save/restore endpoints execute cleanly (empty-slot round-trip + follow-up completion OK) |
+| 6 | MEDIUM (test coverage) | `tests/test-backend-ops.cpp:8244,9900` | `all_types[]` lost TQ3_1S/TQ4_1S (`753f19982`); FA type_KV sweep lost TURBO3_0/TURBO4_0 (`88fcb67e5`/`bc5c9c891`, ~528 cases). TQ3_1S has zero backend-ops coverage; no FA test exercises turbo KV. | **FIXED** — restored both; suite now covers TQ3_1S/TQ4_1S in all_types sweeps and turbo3/4 FA (1056 FA cases on CUDA) |
+| 7 | LOW | `common/chat-auto-parser-generator.cpp:168`, `tools/server/server-context.cpp:1302` | Auto-parser path does not tolerate leading whitespace before `<think>` (`8f3fbc0f` 4th hunk: `p.space() + p.optspace(start)`); `fb2d86d31`'s server-context "don't cap" hunk dropped (fallback semantics moved to zero-padding, server-side n_ctx cap hunk re-evaluated). | **FIXED** — auto-parser hunk ported verbatim; server no-cap behavior restored (warn + rely on rope scaling, matching fork) |
+
+### Bonus fix (found while resolving #1): TQ4_1S native dp4a kernel broken
+
+- **Symptom (reproduced):** with `GGML_TQ_NATIVE=1` (or any TQ3_1S model) the fixed dispatch reached the fused TQ kernel, which produced numerically garbage output (NMSE ~0.9-1.0) vs the CPU reference on every shape.
+- **Root cause:** `tq4_cents8_reg()` in `ggml/src/ggml-cuda/mmvq-tq.cu` — the `__byte_perm`-based centroid LUT lookup. Empirically verified with standalone kernels on this toolchain (CUDA 13.3 / sm_120): `__byte_perm` with constant selectors folds with different semantics than runtime selectors (constant: 16-bit nibble selector; runtime: only selector bytes 0-1 honored -> result bytes 1,3 zero). The interleave constants (0x5140/0x7362) folded correctly, but the runtime-selector LUT steps (`__byte_perm(CR03, CR47, sel0)` with sel0 runtime) produced `0x81818181` for all inputs. The function is byte-identical to fork tip, i.e. **fork-inherited** (present since `51481c3b5`; the fork's native TQ4_1S decode was never numerically validated — its suite runs TQ4_1S as converted q8_0).
+- **Fix:** rewrote the LUT with deterministic shifts (`cent()`: `((v & 8) ? (v & 4 ? CRCF : CR8B) : (v & 4 ? CR47 : CR03)) >> (8 * (v & 3)) & 0xFF`, sel0/sel1 interleaves via plain byte shifts), verified in isolation (all-nibble sweep correct), then in-suite.
+- **Verified:** `GGML_TQ_NATIVE=1` TQ4_1S mul_mat (m=256, k=1536, n=1/2/4/8) now passes; scalar TQ3_1S/TQ4_1S paths unchanged (already correct).
+
+### Resolution verification (2026-08-01, after all 8 fixes)
+
+- Build: `llama-cli llama-server llama-quantize test-backend-ops llama-bench test-turbo-quant test-quantize-fns` — 0 errors, 0 warnings.
+- `test-turbo-quant`: turbo3 MSE=0/Cosine=1.0, turbo4 Cosine=0.9956 — OK. `test-quantize-fns`: OK (incl. TQ3_1S/TQ4_1S).
+- `test-backend-ops -b CPU`: **23,217/23,217 OK, 0 FAIL** (was 17,825 before the coverage fix; +5,392 restored cases incl. TQ3_1S/TQ4_1S all_types sweeps and the turbo3/4 FA sweep).
+- `test-backend-ops -b CUDA0`: **16,311/16,311 OK, 0 FAIL** (was 13,107; +3,204). TQ3_1S MUL_MAT (fused scalar path) and TQ4_1S MUL_MAT (dp4a path, incl. `GGML_TQ_NATIVE=1`) all OK; 1,056 turbo FA cases run; SET_ROWS/GET_ROWS_BACK with TQ dst report not-supported (harness gate, fork-identical).
+- End-to-end llama-cli on Qwen3-8B-Q8_0 (CUDA): f16 167, turbo2 157, turbo3 154, turbo4 156 t/s generation, coherent output, clean exit.
+- llama-server with `--slot-save-path`: save/restore endpoints execute cleanly (round-trip + follow-up completion OK); sidecar code paths exercised (no checkpoints persisted in the empty-slot flow — upstream prompt-cache migration moves prompts between slots; the fork's checkpoint-populated scenario needs the fork's mid-conversation flow).
+
+### Non-regressions (verified, not fixed)
+- `SET_ROWS_TURBO3/4` "not supported [CUDA0]" in the harness: fork-identical (supports_op byte-identical); the graph path dispatches turbo set_rows via `ggml_cuda_op_set_rows` and end-to-end decode works.
+- Fork-inherited latent issues, intentionally left byte-identical to fork tip: 64KB stack array `float G[TURBO_D*TURBO_D]` (`ggml-turbo-quant.c:81`, `a5a0f7b86` reverted in fork), dead 64-group quantize path (`blocks_per_group = 0` for group_size=64, unreachable due to 128-padding), `TURBO4_USE_4BIT=0` rnorm read-after-no-write (dead since 4-bit default), stale comments.
+- CUDA `get_alloc_size` divergence (upstream's in-buffer f16_extra reservation kept while launch_fattn pool-allocates): over-reservation only, no functional impact; left as-is to minimize delta (fork's removal was performance-motivated).
+- 42 `UNRESOLVED_NONCODE` commits: docs/README/CI/merge commits; CI workflows ported under `present_exact_or_equivalent_in_tree` commits; README prebuild links are fork branding, intentionally dropped.
+- 14 fork-only files: dev artifacts (autoresearch, bench-smem, turbo-quality-gate, ROCm notes) intentionally dropped.
 
 ## What was done (this session)
 
@@ -40,7 +174,7 @@ All commit IDs below are verified exists in the local fork. **If upstream/master
 - **DSPARK support RESTORED (2026-07-31)** — user decision (reversed the earlier strip). DSPARK is **upstream-merged code**: commit `84075273c` "spec: add DSpark speculative decoding (#25173)" (2026-07-28) is an ancestor of `upstream/master` (verified via `git merge-base --is-ancestor` against ref tip `5f55650a`, 2026-07-30 — see Decision 4); the earlier "uncommitted PR" belief was disproven. The fork itself has zero DSPARK, so DSPARK exists in this tree only as upstream code. All DSPARK code was restored from upstream across all 13 affected files. Verified: every file now matches upstream's `dspark` reference count exactly; the 5-target build passes; DFlash semantics preserved. **Important distinction:** `DGX-Spark` (NVIDIA GB10 / compute-capability 12.10 hardware support: `GGML_CUDA_CC_DGX_SPARK`, UMA handling) is a SEPARATE, upstream-merged feature and was never touched. See §7 Scope Decisions + Decision 4.
 - **No leftover conflict markers** in `src/`, `common/`, `ggml/`, `tools/` (the `=======` hits are ASCII art in comments/logs, not merge markers).
 - **Parity fixes applied after the prior audit:** restored `GGML_OP_TURBO_WHT` meta-backend split handling, restored TurboQuant row-validation cases, and restored server handling for DFlash/Eagle3 convenience flags during output sizing and speculative initialization.
-- **Current parity status:** upstream is fully contained in the local tree; the fork-specific runtime differences identified by the exact-ref audit are now ported. Build and focused validation are pending for these edits.
+- **Current parity status:** upstream is fully contained in the local tree; strict all-commits parity with the TurboQuant feature branch is not yet confirmed and requires commit-by-commit disposition evidence.
 
 ## What still needs to be done
 
@@ -102,7 +236,7 @@ Re-verified the full plan against the committed tree (HEAD `7f05310b5`, tree cle
 
 **Tests ported (2026-08-01):** `test-backend-ops.cpp` — TURBO_WHT fwd/inv + round-trip, SET_ROWS turbo3/turbo4/TQ4_1S round-trips, TQ4_1S mul_mat sweeps, TQ4_1S tolerance case (suite: 12,936 OK / 0 FAIL; turbo3/4 SET_ROWS reported unsupported on CUDA — identical to fork, those tests target Vulkan). `test-quantize-fns.cpp` — rotated-domain buffer sizing, turbo KV skip with rationale, TQ3_1S thresholds.
 
-**Verdict:** the current local tree contains the upstream tip and the fork's TurboQuant runtime, tests, and docs-of-record, including the previously missing meta-backend WHT, server DFlash convenience-flag handling, and TurboQuant validation cases. Remaining differences are intentional non-runtime artifacts (UI commits, fork branding/scripts, obsolete fork files, and upstream-preference choices). Runtime validation remains hardware-limited for Metal/Vulkan/SYCL and DSpark-format model validation remains blocked by the available checkpoint format.
+**Verdict (updated for strict requirement):** upstream tip containment is confirmed, and major TurboQuant runtime surface is present; however, strict "ALL feature commits ported unless upstream-equivalent" is **not yet confirmed**. The 2026-07-31 strict audit found 323 feature-branch commits not patch-equivalent in HEAD, so this plan must keep an open commit-resolution ledger until each one is classified as either "ported", "upstream-equivalent", or "intentionally dropped" with evidence.
 
 ## Decisions recorded during the merge (deliberate "reduce to minimum delta" choices)
 

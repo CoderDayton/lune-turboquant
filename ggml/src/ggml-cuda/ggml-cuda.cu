@@ -1908,7 +1908,11 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_mul_mat_f(ctx, src0, src1, nullptr, dst);
         return;
     }
-    if (ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
+
+    // TQ weight types use the fused dp4a path (decode) or runtime q8_0 conversion + cuBLAS (prefill),
+    // never mmvq/mmq (mmvq's type switch has no TQ cases and aborts).
+    const bool is_tq_weight = (src0->type == GGML_TYPE_TQ4_1S || src0->type == GGML_TYPE_TQ3_1S);
+    if (ggml_cuda_should_use_mmvq(src0->type, cc, ne11) && !is_tq_weight) {
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
         return;
     }
@@ -1918,10 +1922,8 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     }
 
     // TQ weight types: fused dp4a path (decode) or runtime q8_0 conversion + cuBLAS (prefill)
-    // TQ weights: fused kernel for small batches, runtime q8_0 conversion + cuBLAS for large ones.
     // Note: upstream removed the fork's `!split` guard, so TQ weights on multi-GPU split layouts
     // are routed to the fused kernel like any other batch (the split layout is not specially handled).
-    const bool is_tq_weight = (src0->type == GGML_TYPE_TQ4_1S || src0->type == GGML_TYPE_TQ3_1S);
     if (is_tq_weight && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
         ggml_cuda_mul_mat_tq(ctx, src0, src1, dst);
         return;

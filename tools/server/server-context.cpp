@@ -249,6 +249,10 @@ struct server_slot {
     bool has_next_token = true;
     bool has_new_line   = false;
     bool truncated      = false;
+    // A restored checkpoint leaves a short prompt suffix to evaluate. Keep that
+    // suffix out of mixed decode batches; the CUDA path is not stable when it is
+    // evaluated concurrently with other active slots.
+    bool prompt_checkpoint_restored = false;
 
     stop_type stop;
 
@@ -347,6 +351,7 @@ struct server_slot {
         generated_text = "";
         has_new_line   = false;
         truncated      = false;
+        prompt_checkpoint_restored = false;
         stop           = STOP_TYPE_NONE;
         stopping_word  = "";
         n_sent_text    = 0;
@@ -1299,8 +1304,8 @@ private:
 
         int n_ctx_slot = llama_n_ctx_seq(ctx_tgt);
         if (n_ctx_slot > n_ctx_train) {
-            SRV_WRN("the slot context (%d) exceeds the training context of the model (%d) - capping\n", n_ctx_slot, n_ctx_train);
-            n_ctx_slot = n_ctx_train;
+            SRV_WRN("the slot context (%d) exceeds the training context of the model (%d) - using rope scaling to extend\n", n_ctx_slot, n_ctx_train);
+            // Do not cap: caller has configured rope scaling (--rope-scale / --rope-scaling yarn) to handle extended context.
         }
 
         slots.clear();
@@ -2362,6 +2367,95 @@ private:
         return true;
     }
 
+    // context checkpoints exist only in process memory and are not part of the
+    // llama_state_seq file format. persist them in a sidecar file so that
+    // action=restore in a fresh process can roll back mid-prompt (e.g. after a
+    // BPE boundary re-tokenization of the prompt tail) instead of re-prefilling.
+    static bool checkpoints_save_sidecar(const std::list<common_prompt_checkpoint> & checkpoints, const std::string & filepath) {
+        FILE * f = fopen(filepath.c_str(), "wb");
+        if (f == nullptr) {
+            return false;
+        }
+
+        bool ok = true;
+
+        const uint32_t magic   = 0x4C434B50; // "PKCL"
+        const uint32_t version = 1;
+        const uint32_t count   = (uint32_t) checkpoints.size();
+
+        ok = ok && fwrite(&magic,   sizeof(magic),   1, f) == 1;
+        ok = ok && fwrite(&version, sizeof(version), 1, f) == 1;
+        ok = ok && fwrite(&count,   sizeof(count),   1, f) == 1;
+
+        for (const auto & cur : checkpoints) {
+            const int64_t  n_tokens = cur.n_tokens;
+            const int32_t  pos_min  = cur.pos_min;
+            const int32_t  pos_max  = cur.pos_max;
+            const uint64_t n_tgt    = cur.data_tgt.size();
+            const uint64_t n_dft    = cur.data_dft.size();
+
+            ok = ok && fwrite(&n_tokens, sizeof(n_tokens), 1, f) == 1;
+            ok = ok && fwrite(&pos_min,  sizeof(pos_min),  1, f) == 1;
+            ok = ok && fwrite(&pos_max,  sizeof(pos_max),  1, f) == 1;
+            ok = ok && fwrite(&n_tgt,    sizeof(n_tgt),    1, f) == 1;
+            ok = ok && fwrite(&n_dft,    sizeof(n_dft),    1, f) == 1;
+            ok = ok && (n_tgt == 0 || fwrite(cur.data_tgt.data(), 1, n_tgt, f) == n_tgt);
+            ok = ok && (n_dft == 0 || fwrite(cur.data_dft.data(), 1, n_dft, f) == n_dft);
+        }
+
+        fclose(f);
+        return ok;
+    }
+
+    static bool checkpoints_load_sidecar(std::list<common_prompt_checkpoint> & checkpoints, const std::string & filepath) {
+        FILE * f = fopen(filepath.c_str(), "rb");
+        if (f == nullptr) {
+            return false;
+        }
+
+        uint32_t magic = 0, version = 0, count = 0;
+
+        bool ok = fread(&magic,   sizeof(magic),   1, f) == 1 &&
+                  fread(&version, sizeof(version), 1, f) == 1 &&
+                  fread(&count,   sizeof(count),   1, f) == 1 &&
+                  magic == 0x4C434B50 && version == 1 && count <= 1024;
+
+        std::list<common_prompt_checkpoint> loaded;
+
+        for (uint32_t i = 0; ok && i < count; ++i) {
+            auto & cur = loaded.emplace_back();
+
+            uint64_t n_tgt = 0;
+            uint64_t n_dft = 0;
+
+            ok = ok && fread(&cur.n_tokens, sizeof(cur.n_tokens), 1, f) == 1;
+            ok = ok && fread(&cur.pos_min,  sizeof(cur.pos_min),  1, f) == 1;
+            ok = ok && fread(&cur.pos_max,  sizeof(cur.pos_max),  1, f) == 1;
+            ok = ok && fread(&n_tgt,        sizeof(n_tgt),        1, f) == 1;
+            ok = ok && fread(&n_dft,        sizeof(n_dft),        1, f) == 1;
+
+            // sanity: refuse absurd blob sizes (16 GiB per blob)
+            ok = ok && n_tgt <= (1ull << 34) && n_dft <= (1ull << 34);
+
+            if (ok) {
+                cur.data_tgt.resize(n_tgt);
+                cur.data_dft.resize(n_dft);
+                ok = ok && (n_tgt == 0 || fread(cur.data_tgt.data(), 1, n_tgt, f) == n_tgt);
+                ok = ok && (n_dft == 0 || fread(cur.data_dft.data(), 1, n_dft, f) == n_dft);
+            }
+        }
+
+        fclose(f);
+
+        if (!ok) {
+            return false;
+        }
+
+        checkpoints = std::move(loaded);
+
+        return true;
+    }
+
     // n_tokens_cur: the number of tokens added to the batch for the current slot
     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
         const int id_task = slot.task->id;
@@ -2610,6 +2704,16 @@ private:
                     const int64_t t_end = ggml_time_us();
                     const double t_save_ms = (t_end - t_start) / 1000.0;
 
+                    // persist context checkpoints alongside the state file so that a
+                    // restore in a fresh process can roll back mid-prompt (see restore path)
+                    if (!slot->prompt.checkpoints.empty()) {
+                        if (checkpoints_save_sidecar(slot->prompt.checkpoints, filepath + ".ckpt")) {
+                            SLT_INF(*slot, "saved %zu context checkpoints to sidecar\n", slot->prompt.checkpoints.size());
+                        } else {
+                            SLT_WRN(*slot, "failed to write checkpoint sidecar %s\n", (filepath + ".ckpt").c_str());
+                        }
+                    }
+
                     auto res = std::make_unique<server_task_result_slot_save_load>();
                     res->id       = task.id;
                     res->id_slot  = id_slot;
@@ -2652,6 +2756,24 @@ private:
                     tokens.resize(token_count);
                     slot->prompt.clear();
                     slot->prompt.tokens.insert(tokens);
+
+                    // reload the context checkpoints written at save time; without them the
+                    // next request's rollback finds no usable cache data and forces a full
+                    // re-prefill ("forcing full prompt re-processing due to lack of cache
+                    // data"). if no sidecar exists (state saved by an older build), fall back
+                    // to synthesizing a tip checkpoint from the just-restored state, which at
+                    // least covers exact continuations.
+                    if (params_base.n_ctx_checkpoints > 0 && token_count > 0) {
+                        if (checkpoints_load_sidecar(slot->prompt.checkpoints, filepath + ".ckpt")) {
+                            SLT_INF(*slot, "restored %zu context checkpoints from sidecar\n", slot->prompt.checkpoints.size());
+                        } else {
+                            const llama_pos p_min = llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), slot->id);
+                            const llama_pos p_max = llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot->id);
+                            if (p_min >= 0 && p_max >= p_min) {
+                                create_checkpoint(*slot, 0, p_min, p_max);
+                            }
+                        }
+                    }
 
                     const int64_t t_end = ggml_time_us();
                     const double t_restore_ms = (t_end - t_start) / 1000.0;
@@ -2985,9 +3107,17 @@ private:
         std::vector<server_slot *> generating;
         std::vector<server_slot *> drafting;
 
+        const bool has_checkpoint_restored_prompt = std::any_of(slots.begin(), slots.end(), [](const server_slot & slot) {
+            return slot.prompt_checkpoint_restored && slot.state == SLOT_STATE_PROCESSING_PROMPT;
+        });
+
         // determine which slots are generating and drafting
         iterate(slots, [&](server_slot & slot) {
             if (slot.state != SLOT_STATE_GENERATING) {
+                return;
+            }
+
+            if (has_checkpoint_restored_prompt) {
                 return;
             }
 
@@ -3377,6 +3507,7 @@ private:
 
                                         pos_next = std::min(pos_next, std::max(it->pos_min + 1, it->pos_max));
                                         n_past   = std::min(slot.prompt.tokens.size_up_to_pos(pos_next), (size_t) it->n_tokens);
+                                        slot.prompt_checkpoint_restored = true;
                                         SLT_TRC(slot, "restored context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", n_past = %d, size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, n_past, (float) it->size() / 1024 / 1024);
                                     }
 
@@ -3426,6 +3557,10 @@ private:
                             }
                         }
                     } // end of SLOT_STATE_STARTED
+
+                    if (slot.prompt_checkpoint_restored && n_tokens_prev > 0) {
+                        return;
+                    }
 
                     if (!slot.can_split()) {
                         // cannot fit the prompt in the current batch - will try next iter
@@ -3567,6 +3702,13 @@ private:
                                 break;
                             }
                         }
+
+                        // a restored checkpoint leaves a short prompt suffix to evaluate; keep it
+                        // in small batches (the CUDA path is not stable when it is evaluated
+                        // concurrently with other active slots)
+                        if (slot.prompt_checkpoint_restored) {
+                            break;
+                        }
                     }
 
                     // the number of tokens added to the batch for the current slot
@@ -3590,6 +3732,7 @@ private:
 
                         slot.n_decoded = 0;
                         slot.i_batch   = batch.size() - 1;
+                        slot.prompt_checkpoint_restored = false;
 
                         slot.init_sampler();
                     } else {

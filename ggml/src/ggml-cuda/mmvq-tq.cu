@@ -72,31 +72,30 @@ __device__ __forceinline__ void tq4_cents8_reg(uint32_t four_bytes, int &c0, int
     constexpr uint32_t CR8B = 0x2C1F1206u;
     constexpr uint32_t CRCF = 0x7F604B3Au;
 
-    // Extract all 8 nibbles from 4 bytes at once (shared across both pairs)
+    // element j: qs byte j/2, nibble (j&1) — even → low nibble, odd → high nibble
     const uint32_t lo = four_bytes & 0x0F0F0F0Fu;
     const uint32_t hi = (four_bytes >> 4) & 0x0F0F0F0Fu;
 
-    // Interleave: bytes 0-1 → sel0 [n0,n1,n2,n3], bytes 2-3 → sel1 [n4,n5,n6,n7]
-    const uint32_t sel0 = __byte_perm(lo, hi, 0x5140u);
-    const uint32_t sel1 = __byte_perm(lo, hi, 0x7362u);
+    // Interleave: bytes 0-1 -> sel0 [n0,n1,n2,n3], bytes 2-3 -> sel1 [n4,n5,n6,n7].
+    // __byte_perm is NOT used for the interleave/LUT: its selector encoding is
+    // compiler-dependent (constant selectors fold differently from runtime ones),
+    // which silently broke the original permute chain on some toolchains.
+    // Plain shifts are deterministic.
+    uint32_t sel0 = (lo & 0xFFu) | ((hi & 0xFFu) << 8) | ((lo & 0xFF00u) << 8) | ((hi & 0xFF00u) << 16);
+    uint32_t sel1 = ((lo >> 16) & 0xFFu) | (((hi >> 16) & 0xFFu) << 8) | (((lo >> 24) & 0xFFu) << 16) | (((hi >> 24) & 0xFFu) << 24);
 
-    // Lookup centroids for sel0 (elements from qs bytes 0-1)
-    {
-        const uint32_t flo = __byte_perm(CR03, CR47, sel0);
-        const uint32_t fhi = __byte_perm(CR8B, CRCF, sel0);
-        const uint32_t msb = (sel0 >> 3) & 0x01010101u;
-        const uint32_t psel = 0x03020100u | (msb << 2);
-        c0 = (int)__byte_perm(flo, fhi, psel);
-    }
+    // nibble v in 0..15 -> centroid_i8 byte: v<8 selects CR03/CR47, v>=8 selects CR8B/CRCF,
+    // v&4 picks the second register of the pair, byte offset is v&3.
+    auto cent = [&](uint32_t v) -> uint32_t {
+        const uint32_t lo_reg = (v & 4u) ? CR47 : CR03;
+        const uint32_t hi_reg = (v & 4u) ? CRCF : CR8B;
+        return (((v & 8u) ? hi_reg : lo_reg) >> (8u * (v & 3u))) & 0xFFu;
+    };
 
-    // Lookup centroids for sel1 (elements from qs bytes 2-3)
-    {
-        const uint32_t flo = __byte_perm(CR03, CR47, sel1);
-        const uint32_t fhi = __byte_perm(CR8B, CRCF, sel1);
-        const uint32_t msb = (sel1 >> 3) & 0x01010101u;
-        const uint32_t psel = 0x03020100u | (msb << 2);
-        c1 = (int)__byte_perm(flo, fhi, psel);
-    }
+    c0 = (int)(cent(sel0 & 0xFFu) | (cent((sel0 >> 8) & 0xFFu) << 8)
+             | (cent((sel0 >> 16) & 0xFFu) << 16) | (cent((sel0 >> 24) & 0xFFu) << 24));
+    c1 = (int)(cent(sel1 & 0xFFu) | (cent((sel1 >> 8) & 0xFFu) << 8)
+             | (cent((sel1 >> 16) & 0xFFu) << 16) | (cent((sel1 >> 24) & 0xFFu) << 24));
 }
 
 // ============================================================================
