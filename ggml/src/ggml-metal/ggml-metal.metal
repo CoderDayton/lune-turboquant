@@ -9940,6 +9940,7 @@ template [[host_name("kernel_cpy_tq3_1s_f16")]] kernel cpy_q_f_t kernel_cpy_q_f3
 template [[host_name("kernel_cpy_tq4_1s_f32")]] kernel cpy_q_f_t kernel_cpy_q_f32<float4x4, block_tq4_1s, 2, dequantize_tq4_1s>;
 template [[host_name("kernel_cpy_tq4_1s_f16")]] kernel cpy_q_f_t kernel_cpy_q_f32<half4x4, block_tq4_1s, 2, dequantize_tq4_1s>;
 
+template<typename T>
 kernel void kernel_concat(
         constant ggml_metal_kargs_concat & args,
         device  const char * src0,
@@ -12079,7 +12080,7 @@ kernel void kernel_set_rows_turbo4(
     }
 }
 
-template<typename T, typename TI>
+template<typename TS, typename TI, typename TD>
 kernel void kernel_set_rows_f(
         constant ggml_metal_kargs_set_rows & args,
         device const  void * src0,
