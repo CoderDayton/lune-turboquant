@@ -365,6 +365,17 @@ Specifies a comma-separated list of speculative decoding types to use.
 ./llama-server [...] --spec-type ngram-mod,ngram-map-k4v
 ```
 
+**Laguna DFlash drafters** (for example `poolside/Laguna-XS-2.1-DFlash` for
+`poolside/Laguna-XS-2.1`) go through the same `draft-dflash` flow. Their GGUF is
+marked with `dflash.decoder_arch = laguna`, which switches the draft layers to the
+Laguna decoder contract (softplus attention gate, per-aux feature norms, context
+K/V through the input layernorm, causal noise block) instead of the generic DFlash
+contract:
+```bash
+./llama-server -m Laguna-XS-2.1.gguf -md Laguna-XS-2.1-DFlash.gguf \
+    --spec-type draft-dflash --spec-draft-n-max 15 -fa on --jinja
+```
+
 ### `--spec-ngram-*-size-n N`
 
 Sets the size N of the lookup n-gram for n-gram map based speculative decoding.
