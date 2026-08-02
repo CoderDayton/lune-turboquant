@@ -347,7 +347,8 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
     static const std::regex pattern_q_weight        ("blk\\.\\d*\\.attn_q.weight");
     static const std::regex pattern_kv_weight       ("blk\\.\\d*\\.attn_(k|v).weight");
     static const std::regex pattern_qkv_weight      ("blk\\.\\d*\\.attn_qkv.weight");
-    static const std::regex pattern_ds4_qkv_weight  ("blk\\.\\d*\\.attn_(q_[ab]|kv)\\.weight");
+    static const std::regex pattern_ds4_q_a_kv_weight ("blk\\.\\d*\\.attn_(q_a|kv)\\.weight");
+    static const std::regex pattern_ds4_q_b_weight    ("blk\\.\\d*\\.attn_q_b\\.weight");
     static const std::regex pattern_q_bias          ("blk\\.\\d*\\.attn_q\\.bias");
     static const std::regex pattern_kv_bias         ("blk\\.\\d*\\.attn_(k|v)\\.bias");
     static const std::regex pattern_qkv_bias        ("blk\\.\\d*\\.attn_qkv.bias");
@@ -442,8 +443,12 @@ struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const str
         if (std::regex_match(tensor_name, pattern_qkv_weight)) {
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output.weight", "ssm_out.weight");
         }
-        if (std::regex_match(tensor_name, pattern_ds4_qkv_weight)) {
-            // DeepSeek-V4 splits q into q_a/q_b and uses a single kv projection; pair them with the attn_output_a output tensor
+        if (std::regex_match(tensor_name, pattern_ds4_q_a_kv_weight)) {
+            // DS4 q_a/kv are low-rank down-projections feeding per-row norms; column split would split the norm row, so mirror them
+            return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_MIRRORED);
+        }
+        if (std::regex_match(tensor_name, pattern_ds4_q_b_weight)) {
+            // DS4 q_b is the up-projection; pair it with the attn_output_a output tensor
             return get_tensor_config_impl(GGML_BACKEND_SPLIT_AXIS_1, "attn_output_a.weight", "attn_output_b.weight");
         }
         if ( std::regex_match(tensor_name, pattern_qkv_bias)) {
