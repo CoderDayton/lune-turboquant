@@ -55,7 +55,6 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "DFlashDraftModel": "qwen",
     "Qwen3DSparkModel": "qwen",
     "DeepseekV4ForCausalLM": "deepseek",
- HEAD
     "DFlashLagunaForCausalLM": "laguna",
 
     "DeepseekV4DSparkModel": "deepseek",

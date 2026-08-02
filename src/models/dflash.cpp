@@ -105,11 +105,11 @@ void llama_model_dflash::load_arch_tensors(llama_model_loader & ml) {
     output_norm_enc = create_tensor(tn(LLM_TENSOR_ENC_OUTPUT_NORM, "weight"), { n_embd }, 0); // encoder hidden_norm (after fc)
     output_norm     = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM,    "weight"), { n_embd }, 0); // decoder final norm
 
- HEAD
     // Laguna drafters norm each captured target feature before concat + fc;
     // the per-aux weights are stacked to [n_embd, n_aux] at conversion time
     if (decoder_laguna) {
         aux_norm = create_tensor(tn(LLM_TENSOR_ENC_AUX_NORM, "weight"), { n_embd, (int64_t) target_layer_ids.size() }, 0);
+    }
 
     if (hparams.dsv4_hc_mult > 0) {
         const int64_t q_lora_rank     = hparams.n_lora_q;
