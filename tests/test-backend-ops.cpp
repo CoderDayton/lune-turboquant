@@ -8334,6 +8334,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_dsv4_hc_comb(257, 8));
     test_cases.emplace_back(new test_dsv4_hc_comb(17, 20));
 
+    // DSV4_HC_COMB eps sweep (restored; lost in the #244 rebase) — validates
+    // CPU/CUDA Sinkhorn eps semantics match across orders of magnitude
+    for (float eps : {1.0e-6f, 1.0e-3f, 1.0e-1f}) {
+        for (int64_t nt : {1, 2, 4, 8, 64}) {
+            for (int ni : {1, 3, 5}) {
+                test_cases.emplace_back(new test_dsv4_hc_comb(nt, ni, eps));
+            }
+        }
+    }
+
     test_cases.emplace_back(new test_dsv4_hc_pre(1, 1));
     test_cases.emplace_back(new test_dsv4_hc_pre(31, 17));
     test_cases.emplace_back(new test_dsv4_hc_pre(128, 257));
