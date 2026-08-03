@@ -889,6 +889,24 @@ void process_shaders() {
     string_to_spv("dequant_tq4_1s", "dequant_tq4_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"D_TYPE", "float16_t"}}));
 
+    // TQ3_1S is the sibling 3-bit type (8 Lloyd-Max levels, 8 indices packed
+    // per 3 bytes, 16 B blocks). Unlike TQ4_1S it had no Vulkan shaders at all,
+    // so dequant_tq3_1s.comp and mul_mat_vec_tq3_1s.comp are new. Everything in
+    // the three-point rationale above applies here verbatim -- the mat-vec maps
+    // one thread to one element of a 32-element block, so it is generated
+    // explicitly and pinned to a 32-thread workgroup host-side rather than
+    // being driven from type_names.
+    //
+    // TQ3_1S is also excluded from the coopmat/coopmat2 matmul paths: it has no
+    // dequant_funcs_cm2.glsl entry, and gfx1151 exposes KHR_coopmat (coopmat1)
+    // only. A stub that returned zeros there would be worse than no support.
+    string_to_spv("mul_mat_vec_tq3_1s_f32_f32", "mul_mat_vec_tq3_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("mul_mat_vec_tq3_1s_f16_f32", "mul_mat_vec_tq3_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("dequant_tq3_1s", "dequant_tq3_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"D_TYPE", "float16_t"}}));
+
     auto get_type_str = [](bool f16) {
         return f16 ? "float16_t" : "float";
     };

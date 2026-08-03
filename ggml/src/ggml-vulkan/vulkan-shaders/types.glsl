@@ -1827,6 +1827,25 @@ struct block_turbo4_0
 #endif
 
 
+#define QUANT_K_TQ3_1S 32
+#define QUANT_R_TQ3_1S 1
+
+// Mirrors block_tq3_1s in ggml/src/ggml-common.h: 2 + 2 + 12 = 16 bytes.
+// The qs array is 4 groups of 3 bytes, each holding 8 three-bit indices.
+struct block_tq3_1s
+{
+    float16_t d0;      // scale for elements 0-15
+    float16_t d1;      // scale for elements 16-31
+    uint8_t qs[12];    // 3-bit centroid indices, 8 packed per 3-byte group
+};
+
+#if defined(DATA_A_TQ3_1S)
+#define QUANT_K QUANT_K_TQ3_1S
+#define QUANT_R QUANT_R_TQ3_1S
+#define QUANT_AUXF 1
+#define A_TYPE block_tq3_1s
+#endif
+
 #define QUANT_K_TQ4_1S 32
 #define QUANT_R_TQ4_1S 1
 
