@@ -5293,8 +5293,9 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     // mat-vec pipelines: the butterfly pairs lanes through a 32-entry shared
     // array, so it is only correct when the workgroup is exactly the block size
     // (RADV on gfx1151 reports warp size 64, so this must not be widened).
-    // Push constants: k, nrows, src_stride, dst_stride.
-    ggml_vk_create_pipeline(device, device->pipeline_tq_rotate_act, "tq_rotate_act", tq_rotate_act_len, tq_rotate_act_data, "main", 2, 4 * sizeof(uint32_t), {32, 1, 1}, {}, 1);
+    // Single read-write binding: rotates ctx->prealloc_y in place, never src1.
+    // Push constants: k, nrows, stride.
+    ggml_vk_create_pipeline(device, device->pipeline_tq_rotate_act, "tq_rotate_act", tq_rotate_act_len, tq_rotate_act_data, "main", 1, 3 * sizeof(uint32_t), {32, 1, 1}, {}, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_TQ3_1S],  "dequant_tq3_1s",  dequant_tq3_1s_len,  dequant_tq3_1s_data,  "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_TQ4_1S],  "dequant_tq4_1s",  dequant_tq4_1s_len,  dequant_tq4_1s_data,  "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);

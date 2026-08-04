@@ -17,24 +17,32 @@
 // k, so k belongs here, on the activation. (mul_mat_vec_tq3_1s.comp folds k
 // into the weight instead; either is fine, but exactly one must apply it.)
 //
-// Deliberately NOT in place. The Metal implementation rotates src1 in place,
-// runs the matmul, then un-rotates, which needs a hazard flag
-// (ggml_metal_op_mutates_tq_src1) and a barrier on both sides -- and its rotate
-// indexes src1 flat while the matmul reads it with nb11/nb12/nb13 strides, so a
-// padded or strided src1 rotates different elements than the matmul consumes.
-// Writing to a separate destination costs one small scratch buffer
-// (n_tokens * k * 4 bytes) and removes that entire class of bug.
+// This runs in place, but ONLY ever on ctx->prealloc_y -- the context-owned
+// staging copy of the activation -- never on the graph's src1. The host forces
+// src1 to be staged for these types precisely so that d_Y cannot alias the real
+// tensor. In-place is safe here because each workgroup reads, transforms and
+// writes back exactly its own 32 contiguous elements, with no cross-workgroup
+// dependency.
+//
+// Metal instead rotates src1 itself, matmuls, then un-rotates, which needs a
+// hazard flag (ggml_metal_op_mutates_tq_src1) plus barriers on both sides --
+// and its rotate indexes src1 flat while the matmul reads it with
+// nb11/nb12/nb13 strides, so a padded or strided src1 rotates different
+// elements than the matmul consumes. Rotating a packed scratch copy removes
+// that entire class: the staging pass has already made it contiguous.
+//
+// f32 throughout: the butterfly is 5 rounds of adds, and doing that in f16
+// would lose precision the quantization did not. The host selects the f32 B
+// variant of the matmul for these types to match.
 
 layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
-layout (binding = 0) readonly  buffer S {float data_s[];};
-layout (binding = 1) writeonly buffer D {float data_d[];};
+layout (binding = 0) buffer S {float data_s[];};
 
 layout (push_constant) uniform parameter {
     uint k;            // elements per row, guaranteed a multiple of 32
     uint nrows;        // total rows: ne11 * ne12 * ne13
-    uint src_stride;   // row stride in elements
-    uint dst_stride;   // row stride in elements
+    uint stride;       // row stride in elements of the packed staging buffer
 } p;
 
 // TQ3_0_SIGNS in ggml-turbo-quant.c / TQ_WEIGHT_SIGNS in turbo-quant.cuh.
@@ -66,10 +74,10 @@ void main() {
 
     const uint g   = gid % groups_per_row;
     const uint tid = gl_LocalInvocationID.x;
-    const uint off = g * 32u + tid;
+    const uint idx = row * p.stride + g * 32u + tid;
 
     // Stage 1: sign flip
-    tq_smem[tid] = data_s[row * p.src_stride + off] * TQ_SIGNS[tid];
+    tq_smem[tid] = data_s[idx] * TQ_SIGNS[tid];
     barrier();
 
     // Stage 2: forward WHT butterfly, 5 stages. Pairs (tid, tid + step) with
@@ -86,5 +94,5 @@ void main() {
         barrier();
     }
 
-    data_d[row * p.dst_stride + off] = tq_smem[tid] * TQ_INV_SQRT32;
+    data_s[idx] = tq_smem[tid] * TQ_INV_SQRT32;
 }
