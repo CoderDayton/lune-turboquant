@@ -1,0 +1,23 @@
+TEST_ID	Model	Config	CTK	CTV	PPL	LogTps	EvalTps	CacheInfo	ExitCode
+g12_f16_f16	gemma4-12b	f16/f16	f16	f16	360.0655	N/A	N/A	K=f16 V=f16	0
+g26_f16_f16	gemma4-26b-a4b	f16/f16	f16	f16	62456.4060	N/A	N/A	K=f16 V=f16	0
+q27_f16_f16	qwen3.6-27b	f16/f16	f16	f16	4.0454	N/A	N/A	K=f16 V=f16	0
+kw_f16_f16	kwaipilot-35b	f16/f16	f16	f16	4.0528	N/A	N/A	K=f16 V=f16	0
+g12_oscar2_oscar2	gemma4-12b	oscar2/oscar2	oscar2	oscar2	1953.7174	N/A	N/A	K=oscar2 V=oscar2	0
+g26_oscar2_oscar2	gemma4-26b-a4b	oscar2/oscar2	oscar2	oscar2	1858.2752	N/A	N/A	K=oscar2 V=oscar2	0
+q27_oscar2_oscar2	qwen3.6-27b	oscar2/oscar2	oscar2	oscar2	4.4735	N/A	N/A	K=oscar2 V=oscar2	0
+g12_oscar2_f16	gemma4-12b	oscar2/f16	oscar2	f16	146539637.8705	N/A	N/A	K=oscar2 V=f16	0
+g26_oscar2_f16	gemma4-26b-a4b	oscar2/f16	oscar2	f16	3903591703.0461	N/A	N/A	K=oscar2 V=f16	0
+q27_oscar2_f16	qwen3.6-27b	oscar2/f16	oscar2	f16	178.8362	N/A	N/A	K=oscar2 V=f16	0
+g12_f16_oscar2	gemma4-12b	f16/oscar2	f16	oscar2	1064022.5662	N/A	N/A	K=f16 V=oscar2	0
+g26_f16_oscar2	gemma4-26b-a4b	f16/oscar2	f16	oscar2	55585.5538	N/A	N/A	K=f16 V=oscar2	0
+q27_f16_oscar2	qwen3.6-27b	f16/oscar2	f16	oscar2	15.0351	N/A	N/A	K=f16 V=oscar2	0
+g12_q8_0_q8_0	gemma4-12b	q8_0/q8_0	q8_0	q8_0	367.0779	N/A	N/A	K=q8_0 V=q8_0	0
+g26_q8_0_q8_0	gemma4-26b-a4b	q8_0/q8_0	q8_0	q8_0	52459.1991	N/A	N/A	K=q8_0 V=q8_0	0
+q27_q8_0_q8_0	qwen3.6-27b	q8_0/q8_0	q8_0	q8_0	4.0601	N/A	N/A	K=q8_0 V=q8_0	0
+kw_q8_0_q8_0	kwaipilot-35b	q8_0/q8_0	q8_0	q8_0	4.0266	N/A	N/A	K=q8_0 V=q8_0	0
+g12_q8_0_turbo4	gemma4-12b	q8_0/turbo4	q8_0	turbo4	311.3459	N/A	N/A	K=q8_0 V=turbo4	0
+g26_q8_0_turbo4	gemma4-26b-a4b	q8_0/turbo4	q8_0	turbo4	52666.8650	N/A	N/A	K=q8_0 V=turbo4	0
+q27_q8_0_turbo4	qwen3.6-27b	q8_0/turbo4	q8_0	turbo4	4.0694	N/A	N/A	K=q8_0 V=turbo4	0
+kw_q8_0_turbo4	kwaipilot-35b	q8_0/turbo4	q8_0	turbo4	4.0167	N/A	N/A	K=q8_0 V=turbo4	0
+kw_oscar2_oscar2	kwaipilot-35b	oscar2/oscar2	oscar2	oscar2	4.3939	N/A	N/A	K=oscar2 V=oscar2	0
