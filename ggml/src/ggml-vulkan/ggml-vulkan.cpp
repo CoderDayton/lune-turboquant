@@ -17952,9 +17952,19 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     // parks the experts in one backend's buffer and then runs the op in the
                     // other, copying every expert tensor across the bus on every token.
                     if (src0_type == GGML_TYPE_TQ3_1S || src0_type == GGML_TYPE_TQ4_1S) {
-                        const uint64_t x_sz_f16 = sizeof(ggml_fp16_t) * ggml_nelements(op->src[0]);
-                        if (x_sz_f16 > device->properties.limits.maxStorageBufferRange) {
-                            return false;
+                        // Only reachable when we would fall back to the f16 dequant path.
+                        // The rotated mul_mm_id path reads the quantized weights directly
+                        // and never materialises the expert tensor as f16, so the limit
+                        // does not apply to it. It needs the pipelines to exist on this
+                        // device (they are not created for coopmat2) and a dim01-contiguous
+                        // src0, which is what ggml_vk_mul_mat_id_q_f16() gates tq_rotate on.
+                        const auto & tq_mmp = device->pipeline_dequant_mul_mat_mat_id[src0_type];
+                        const bool have_rotated = !tq_mmp.f16acc->is_empty() || !tq_mmp.f32acc->is_empty();
+                        if (!have_rotated || !ggml_vk_dim01_contiguous(op->src[0])) {
+                            const uint64_t x_sz_f16 = sizeof(ggml_fp16_t) * ggml_nelements(op->src[0]);
+                            if (x_sz_f16 > device->properties.limits.maxStorageBufferRange) {
+                                return false;
+                            }
                         }
                     }
                     if (!device->mul_mat_id_s[src0_type] && !device->mul_mat_id_m[src0_type] && !device->mul_mat_id_l[src0_type]) {
