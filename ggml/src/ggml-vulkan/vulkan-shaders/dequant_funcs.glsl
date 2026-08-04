@@ -762,6 +762,57 @@ vec2 get_dm(uint ib, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_TQ3_1S)
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    // TQ3_1S: 8-level Lloyd-Max centroids for N(0,1). ASYMMETRIC -- must match
+    // TQ3_0_CENTROIDS in ggml/src/ggml-turbo-quant.c byte for byte.
+    const float centroids[8] = float[8](
+        -1.996684, -1.291398, -0.740341, -0.247508,
+         0.230106,  0.725222,  1.277503,  1.988943
+    );
+
+    // iqs is the element pair index within the block (0..15)
+    const uint j0 = iqs;
+    const uint j1 = iqs + 1;
+
+    // 8 three-bit indices per 3-byte group, index i at bits [3i, 3i+2] of the
+    // group read as a 24-bit little-endian word (see dequant_tq3_1s.comp).
+    const uint g0 = (j0 >> 3) * 3u;
+    const uint g1 = (j1 >> 3) * 3u;
+    const uint p0 = uint(data_a[a_offset + ib].qs[g0])
+                  | (uint(data_a[a_offset + ib].qs[g0 + 1u]) << 8)
+                  | (uint(data_a[a_offset + ib].qs[g0 + 2u]) << 16);
+    const uint p1 = uint(data_a[a_offset + ib].qs[g1])
+                  | (uint(data_a[a_offset + ib].qs[g1 + 1u]) << 8)
+                  | (uint(data_a[a_offset + ib].qs[g1 + 2u]) << 16);
+    const uint idx0 = (p0 >> ((j0 & 7u) * 3u)) & 7u;
+    const uint idx1 = (p1 >> ((j1 & 7u) * 3u)) & 7u;
+
+    // Scale by d0 (elements 0-15) or d1 (elements 16-31)
+    const float d0 = float(data_a[a_offset + ib].d0);
+    const float d1 = float(data_a[a_offset + ib].d1);
+    const float s0 = (j0 < 16) ? d0 : d1;
+    const float s1 = (j1 < 16) ? d0 : d1;
+
+    // Returns centroid * scale WITHOUT the inverse RHT, exactly like the
+    // TQ4_1S branch below. Any caller that wants true weights must apply the
+    // inverse WHT itself, or pre-rotate the activation instead (which is what
+    // mul_mat_vec_tq3_1s.comp does). Callers that do neither -- notably
+    // get_rows_quant.comp -- would get un-rotated values, which is why
+    // GET_ROWS support is not claimed for this type.
+    return vec2(centroids[idx0] * s0, centroids[idx1] * s1);
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    vec2 v0 = dequantize(ib, iqs, a_offset);
+    vec2 v1 = dequantize(ib, iqs + 2, a_offset);
+    return vec4(v0.x, v0.y, v1.x, v1.y);
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    // No global scale/min: scales are applied per-element in dequantize()
+    return vec2(1, 0);
+}
+#endif
+
 #if defined(DATA_A_TQ4_1S)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     // TQ4_1S: 16-level Lloyd-Max centroids for N(0,1)

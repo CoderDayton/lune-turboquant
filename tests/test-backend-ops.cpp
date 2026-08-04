@@ -2463,9 +2463,10 @@ struct test_set_rows : public test_case {
             err_estimate /= 0.25f*float(ne[0] * r * ne[2]*nr23[0] * ne[3]*nr23[1]);
             return err_estimate;
         }
-        if (type_dst == GGML_TYPE_TQ4_1S) {
-            // Reduction order matters; TQ4_1S has a 32-element WHT inside the
-            // dot product which amplifies fp reduction differences slightly.
+        if (type_dst == GGML_TYPE_TQ3_1S || type_dst == GGML_TYPE_TQ4_1S) {
+            // Reduction order matters; both TurboQuant weight types have a
+            // 32-element WHT inside the dot product which amplifies fp
+            // reduction differences slightly.
             return 0.01;
         }
         return 1e-7;
@@ -9202,6 +9203,31 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // TQ3_1S: same two sweeps as TQ4_1S above, for the 3-bit sibling type.
+    // TQ3_1S packs 8 indices per 3 bytes rather than 2 per byte, so the
+    // per-thread unpack differs; the shared-memory WHT on the activation and
+    // the 32-thread workgroup are identical. Bugs in the packing offset only
+    // surface once k is large enough to cross many block boundaries.
+    for (int k : { 1536, 2048, 2304, 3072, 4096 }) {
+        for (int m : { 256, 1152, 1536, 2048, 5120, 6144 }) {
+            for (int n : { 1, 2, 4, 8 }) {
+                test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ3_1S, GGML_TYPE_F32, m, n, k, {1, 1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ3_1S, GGML_TYPE_F16, m, n, k, {1, 1}, {1, 1}));
+            }
+        }
+    }
+
+    // TQ3_1S: large-batch MUL_MAT, i.e. the pipeline_dequant[TQ3_1S] +
+    // generic f16 matmul path taken when n > mul_mat_vec_max_cols = 8.
+    // This is the only coverage the dequant shader's inverse WHT gets.
+    for (int k : { 1536, 2048 }) {
+        for (int m : { 256, 1536, 2048 }) {
+            for (int n : { 16, 64, 256 }) {
+                test_cases.emplace_back(new test_mul_mat(GGML_TYPE_TQ3_1S, GGML_TYPE_F32, m, n, k, {1, 1}, {1, 1}));
+            }
+        }
+    }
+
     // m == 1, with n on both sides of MMVF_MAX_BATCH_SIZE (8): mmvf below, operand swap above
     for (int64_t n : {1, 7, 8, 9, 16, 128, 512}) {
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F32, GGML_TYPE_F32, 1, n, 2048, {1, 1}, {1, 1}));
@@ -9385,6 +9411,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     for (ggml_type type_a : all_types) {
         test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 64, 16, 3*ggml_blck_size(type_a)));
+        // n=1 as well as n=16: ggml_vk_use_mul_mat_vec_id() selects the mat-vec path only
+        // when src2->ne[1] <= 8, so the n=16 case above exercises mul_mm_id and never touches
+        // the decode path. A backend that claims MUL_MAT_ID support without a mul_mat_vec_id
+        // pipeline for the type passes at n=16 and asserts on a null pipeline at n=1.
+        test_cases.emplace_back(new test_mul_mat_id(type_a, GGML_TYPE_F32, 4, 2, false, 64, 1, 3*ggml_blck_size(type_a)));
     }
 
     for (ggml_type type_a : base_types) {

@@ -854,6 +854,59 @@ void process_shaders() {
     // TurboQuant Walsh-Hadamard Transform op (Q forward + kqv inverse rotation)
     string_to_spv("turbo_wht", "turbo_wht.comp", {});
 
+    // TurboQuant WEIGHT types.
+    //
+    // dequant_tq4_1s.comp and mul_mat_vec_tq4_1s.comp have been in the tree
+    // since 2a716ac4 but were never passed to glslc: the Vulkan SPIR-V build is
+    // driven entirely by the explicit string_to_spv() calls here (there is no
+    // glob), and "tq4_1s" appears in neither type_names nor any generation
+    // loop. The shaders were dead files, so every TQ4_1S MUL_MAT fell back to
+    // CPU while test-backend-ops reported OK -- its TQ4_1S cases were silently
+    // skipped rather than run (see ggml-org/llama.cpp#242 for why a fully
+    // skipped op still reports success).
+    //
+    // These are generated here rather than by adding "tq4_1s" to type_names,
+    // because that loop would also emit three things we must not use:
+    //
+    //   1. USE_SUBGROUP_ADD / _NO_SHMEM reduction variants. mul_mat_vec_tq4_1s
+    //      indexes a 32-entry shared array by gl_LocalInvocationID.x and pairs
+    //      lanes as (tid, tid + step) for the butterfly, so it is only correct
+    //      for a 32-thread workgroup. A subgroup reduction over a wave that is
+    //      not exactly the workgroup is wrong, and RADV on gfx1151 (Strix Halo,
+    //      Radeon 8060S) reports "warp size: 64". The host side pins these
+    //      pipelines to a 32-thread workgroup with SHMEM reduction to match.
+    //   2. mul_mat_vec_id_tq4_1s_*, for which no host pipeline is created.
+    //   3. get_rows_tq4_1s via get_rows_quant.comp, which applies no inverse
+    //      WHT and whose get_dm() returns vec2(1,0); it would hand back
+    //      un-rotated centroid*scale values. GET_ROWS support is deliberately
+    //      not claimed for this type.
+    string_to_spv("mul_mat_vec_tq4_1s_f32_f32", "mul_mat_vec_tq4_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("mul_mat_vec_tq4_1s_f16_f32", "mul_mat_vec_tq4_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}));
+    // Cold path: dequantize the whole tensor to f16 and run the generic matmul.
+    // Used when n > mul_mat_vec_max_cols (prompt processing).
+    string_to_spv("dequant_tq4_1s", "dequant_tq4_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"D_TYPE", "float16_t"}}));
+
+    // TQ3_1S is the sibling 3-bit type (8 Lloyd-Max levels, 8 indices packed
+    // per 3 bytes, 16 B blocks). Unlike TQ4_1S it had no Vulkan shaders at all,
+    // so dequant_tq3_1s.comp and mul_mat_vec_tq3_1s.comp are new. Everything in
+    // the three-point rationale above applies here verbatim -- the mat-vec maps
+    // one thread to one element of a 32-element block, so it is generated
+    // explicitly and pinned to a 32-thread workgroup host-side rather than
+    // being driven from type_names.
+    //
+    // TQ3_1S is also excluded from the coopmat/coopmat2 matmul paths: it has no
+    // dequant_funcs_cm2.glsl entry, and gfx1151 exposes KHR_coopmat (coopmat1)
+    // only. A stub that returned zeros there would be worse than no support.
+    string_to_spv("mul_mat_vec_tq3_1s_f32_f32", "mul_mat_vec_tq3_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("mul_mat_vec_tq3_1s_f16_f32", "mul_mat_vec_tq3_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("dequant_tq3_1s", "dequant_tq3_1s.comp",
+        merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"D_TYPE", "float16_t"}}));
+
     auto get_type_str = [](bool f16) {
         return f16 ? "float16_t" : "float";
     };
