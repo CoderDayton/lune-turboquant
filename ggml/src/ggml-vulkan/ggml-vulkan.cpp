@@ -884,6 +884,11 @@ struct vk_device_struct {
     vk_pipeline pipeline_dequant_mul_mat_vec_q8_1_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_max_cols];
     vk_pipeline pipeline_dequant_mul_mat_vec_id_q8_1_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT];
 
+    // Activation pre-rotation for the TurboQuant rotated matmul path. One
+    // pipeline serves TQ3_1S and TQ4_1S: they share the 32-element sign pattern
+    // and butterfly, and the shader only touches the activation.
+    vk_pipeline pipeline_tq_rotate_act;
+
     vk_pipeline pipeline_mul_mat_vec_p021_f16_f32[p021_max_gqa_ratio];
     vk_pipeline pipeline_mul_mat_vec_nc_f16_f32;
     vk_pipeline pipeline_get_rows[GGML_TYPE_COUNT];
@@ -5284,6 +5289,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_IQ4_NL],  "dequant_iq4_nl",  dequant_iq4_nl_len,  dequant_iq4_nl_data,  "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_MXFP4],   "dequant_mxfp4",   dequant_mxfp4_len,   dequant_mxfp4_data,   "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_NVFP4],   "dequant_nvfp4",   dequant_nvfp4_len,   dequant_nvfp4_data,   "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
+    // 32 threads, one 32-element group per workgroup. Fixed at 32 like the TQ
+    // mat-vec pipelines: the butterfly pairs lanes through a 32-entry shared
+    // array, so it is only correct when the workgroup is exactly the block size
+    // (RADV on gfx1151 reports warp size 64, so this must not be widened).
+    // Push constants: k, nrows, src_stride, dst_stride.
+    ggml_vk_create_pipeline(device, device->pipeline_tq_rotate_act, "tq_rotate_act", tq_rotate_act_len, tq_rotate_act_data, "main", 2, 4 * sizeof(uint32_t), {32, 1, 1}, {}, 1);
+
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_TQ3_1S],  "dequant_tq3_1s",  dequant_tq3_1s_len,  dequant_tq3_1s_data,  "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_TQ4_1S],  "dequant_tq4_1s",  dequant_tq4_1s_len,  dequant_tq4_1s_data,  "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
 
