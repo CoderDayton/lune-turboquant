@@ -646,10 +646,13 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
     if (!coopmat2) {
         for (const auto& tname : {std::string("tq3_1s"), std::string("tq4_1s")}) {
             const std::string data_a_key = "DATA_A_" + to_uppercase(tname);
+            // Must carry FLOAT_TYPEV8 as well: load_b_to_shmem() references it
+            // whenever LOAD_VEC_B is 8, which it is on the fp16 path.
             const std::map<std::string, std::string> float_type_dict = {
                 {"FLOAT_TYPE",   FLOAT_TYPE(1, tname)},
                 {"FLOAT_TYPEV2", FLOAT_TYPE(2, tname)},
                 {"FLOAT_TYPEV4", FLOAT_TYPE(4, tname)},
+                {"FLOAT_TYPEV8", FLOAT_TYPE(8, tname)},
             };
 
             string_to_spv(shader_name + "_" + tname + "_f32" + dot2_sfx, "mul_mm.comp",
