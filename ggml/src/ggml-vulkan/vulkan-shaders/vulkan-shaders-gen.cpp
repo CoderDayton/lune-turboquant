@@ -875,7 +875,9 @@ void process_shaders() {
     //      not exactly the workgroup is wrong, and RADV on gfx1151 (Strix Halo,
     //      Radeon 8060S) reports "warp size: 64". The host side pins these
     //      pipelines to a 32-thread workgroup with SHMEM reduction to match.
-    //   2. mul_mat_vec_id_tq4_1s_*, for which no host pipeline is created.
+    //   2. mul_mat_vec_id_tq4_1s_f16_f32. The MUL_MAT_ID host path asserts the
+    //      B operand is f32 or q8_1 (ggml_vk_get_dequantize_mul_mat_vec_id), so
+    //      only the f32 id variant is generated below.
     //   3. get_rows_tq4_1s via get_rows_quant.comp, which applies no inverse
     //      WHT and whose get_dm() returns vec2(1,0); it would hand back
     //      un-rotated centroid*scale values. GET_ROWS support is deliberately
@@ -884,6 +886,13 @@ void process_shaders() {
         merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
     string_to_spv("mul_mat_vec_tq4_1s_f16_f32", "mul_mat_vec_tq4_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}));
+    // MoE decode. The same source compiled with MUL_MAT_ID: all of the expert
+    // indirection lives in mul_mat_vec_base.glsl (get_offsets(), reduce_result()),
+    // which this shader already includes, and the expert id arrives via
+    // gl_WorkGroupID.y, which it never touches. The 32-thread pin and the
+    // shared-memory butterfly are therefore unaffected.
+    string_to_spv("mul_mat_vec_id_tq4_1s_f32_f32", "mul_mat_vec_tq4_1s.comp",
+        merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {"DATA_A_TQ4_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
     // Cold path: dequantize the whole tensor to f16 and run the generic matmul.
     // Used when n > mul_mat_vec_max_cols (prompt processing).
     string_to_spv("dequant_tq4_1s", "dequant_tq4_1s.comp",
@@ -904,6 +913,8 @@ void process_shaders() {
         merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
     string_to_spv("mul_mat_vec_tq3_1s_f16_f32", "mul_mat_vec_tq3_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}));
+    string_to_spv("mul_mat_vec_id_tq3_1s_f32_f32", "mul_mat_vec_tq3_1s.comp",
+        merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
     string_to_spv("dequant_tq3_1s", "dequant_tq3_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"D_TYPE", "float16_t"}}));
 

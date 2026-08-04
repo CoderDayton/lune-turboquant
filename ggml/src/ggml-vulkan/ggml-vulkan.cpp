@@ -5213,6 +5213,17 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_MXFP4],   "mul_mat_vec_id_mxfp4_f32",   OCP_DMMV_LEN(arr_dmmv_id_mxfp4_f32_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_id_mxfp4_f32_f32, reduc16), "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq}, 1, true, use_subgroups16, force_subgroup_size16);
         ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_NVFP4],   "mul_mat_vec_id_nvfp4_f32",   OCP_DMMV_LEN(arr_dmmv_id_nvfp4_f32_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_id_nvfp4_f32_f32, reduc16), "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq}, 1, true, use_subgroups16, force_subgroup_size16);
 
+        // TurboQuant weight types. Same 32-thread pin and SHMEM reduction as the
+        // non-id pipelines above (tq_wg_size / tq_use_subgroups are declared at
+        // the top of this loop): the id shaders are the same source compiled
+        // with MUL_MAT_ID, so the workgroup constraint is identical. No
+        // arr_dmmv_id_tq*_f32_f32[] array exists -- these are generated
+        // explicitly rather than from type_names -- so the raw _len/_data
+        // symbols are referenced directly, as the non-id pipelines do. The id
+        // pipelines have no num_cols dimension, hence {tq_wg_size, 1}.
+        ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_TQ3_1S],  "mul_mat_vec_id_tq3_1s_f32",  mul_mat_vec_id_tq3_1s_f32_f32_len, mul_mat_vec_id_tq3_1s_f32_f32_data, "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {1, 1, 1}, {tq_wg_size, 1}, 1, true, tq_use_subgroups, tq_force_subgroup_size);
+        ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_TQ4_1S],  "mul_mat_vec_id_tq4_1s_f32",  mul_mat_vec_id_tq4_1s_f32_f32_len, mul_mat_vec_id_tq4_1s_f32_f32_data, "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {1, 1, 1}, {tq_wg_size, 1}, 1, true, tq_use_subgroups, tq_force_subgroup_size);
+
 #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
         if (device->integer_dot_product) {
             const uint32_t subgroup_size_int = (device->vendor_id == VK_VENDOR_ID_INTEL && device->subgroup_size_control) ? device->subgroup_min_size : device->subgroup_size;
@@ -7835,6 +7846,10 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
         case GGML_TYPE_IQ4_NL:
         case GGML_TYPE_MXFP4:
         case GGML_TYPE_NVFP4:
+        // TQ3_1S/TQ4_1S are deliberately absent from the q8_1 switch above:
+        // their id pipelines are f32-B only.
+        case GGML_TYPE_TQ3_1S:
+        case GGML_TYPE_TQ4_1S:
             break;
         default:
             return nullptr;
@@ -7855,6 +7870,13 @@ static vk_pipeline ggml_vk_get_dequantize_mul_mat_vec_id(ggml_backend_vk_context
                 dmmv_wg = DMMV_WG_SIZE_LARGE;
             }
         }
+    }
+
+    // Mirrors the pin in ggml_vk_get_dequantize_mul_mat_vec(): the TurboQuant
+    // mat-vec shaders are only correct at a 32-thread workgroup, so the size
+    // class must not be allowed to select a different pipeline.
+    if (a_type == GGML_TYPE_TQ3_1S || a_type == GGML_TYPE_TQ4_1S) {
+        dmmv_wg = DMMV_WG_SIZE_SUBGROUP;
     }
 
     if (b_type == GGML_TYPE_Q8_1) {
@@ -17813,19 +17835,24 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             {
                 ggml_type src0_type = op->src[0]->type;
                 if (op->op == GGML_OP_MUL_MAT_ID) {
-                    // TurboQuant weight types have no mul_mat_vec_id pipeline. The
-                    // mul_mat_id_s/m/l check below does not reject them: it is a shared-memory
-                    // heuristic, and ggml_vk_matmul_shmem_support() has no lut_size case for
-                    // TQ3_1S/TQ4_1S, so it computes a trivially-fitting size and leaves those
-                    // flags true on mainstream vendors. Claiming support is only survivable
-                    // while n > 8, where ggml_vk_use_mul_mat_vec_id() routes to mul_mm_id and
-                    // the generic dequant-to-f16 path picks it up. On the decode path
-                    // (src2->ne[1] <= 8) it reaches ggml_vk_get_dequantize_mul_mat_vec_id(),
-                    // whose type switch has no TQ cases, and asserts on a null pipeline. That
-                    // is ordinary MoE decode for a TQ-quantized model, so reject explicitly
-                    // until mul_mat_vec_id_tq{3,4}_1s exists.
+                    // The TurboQuant weight types now have mul_mat_vec_id pipelines, so MoE
+                    // decode runs on the GPU. Prompt processing does not: there is still no TQ
+                    // mul_mm_id, so ggml_vk_get_mul_mat_mat_id_pipeline() returns nullptr,
+                    // qx_needs_dequant goes true, and the generic path stages the ENTIRE expert
+                    // tensor as f16 (x_ne = ggml_nelements(src0), all experts). Reject when that
+                    // staging buffer would not fit, or ggml_vk_mul_mat_id_q_f16() reaches
+                    // GGML_ABORT("Requested preallocation size is too large").
+                    //
+                    // The gate is deliberately independent of src2->ne[1]. An n-dependent gate is
+                    // worse than no support at all: weight_buft_supported() probes with a fixed
+                    // ids->ne[1] = 512, so a gate that answers differently at load and at decode
+                    // parks the experts in one backend's buffer and then runs the op in the
+                    // other, copying every expert tensor across the bus on every token.
                     if (src0_type == GGML_TYPE_TQ3_1S || src0_type == GGML_TYPE_TQ4_1S) {
-                        return false;
+                        const uint64_t x_sz_f16 = sizeof(ggml_fp16_t) * ggml_nelements(op->src[0]);
+                        if (x_sz_f16 > device->properties.limits.maxStorageBufferRange) {
+                            return false;
+                        }
                     }
                     if (!device->mul_mat_id_s[src0_type] && !device->mul_mat_id_m[src0_type] && !device->mul_mat_id_l[src0_type]) {
                         // If there's not enough shared memory for row_ids and the result tile, fallback to CPU
