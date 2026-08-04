@@ -17813,6 +17813,20 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
             {
                 ggml_type src0_type = op->src[0]->type;
                 if (op->op == GGML_OP_MUL_MAT_ID) {
+                    // TurboQuant weight types have no mul_mat_vec_id pipeline. The
+                    // mul_mat_id_s/m/l check below does not reject them: it is a shared-memory
+                    // heuristic, and ggml_vk_matmul_shmem_support() has no lut_size case for
+                    // TQ3_1S/TQ4_1S, so it computes a trivially-fitting size and leaves those
+                    // flags true on mainstream vendors. Claiming support is only survivable
+                    // while n > 8, where ggml_vk_use_mul_mat_vec_id() routes to mul_mm_id and
+                    // the generic dequant-to-f16 path picks it up. On the decode path
+                    // (src2->ne[1] <= 8) it reaches ggml_vk_get_dequantize_mul_mat_vec_id(),
+                    // whose type switch has no TQ cases, and asserts on a null pipeline. That
+                    // is ordinary MoE decode for a TQ-quantized model, so reject explicitly
+                    // until mul_mat_vec_id_tq{3,4}_1s exists.
+                    if (src0_type == GGML_TYPE_TQ3_1S || src0_type == GGML_TYPE_TQ4_1S) {
+                        return false;
+                    }
                     if (!device->mul_mat_id_s[src0_type] && !device->mul_mat_id_m[src0_type] && !device->mul_mat_id_l[src0_type]) {
                         // If there's not enough shared memory for row_ids and the result tile, fallback to CPU
                         return false;
