@@ -3558,10 +3558,6 @@ private:
                         }
                     } // end of SLOT_STATE_STARTED
 
-                    if (slot.prompt_checkpoint_restored && n_tokens_prev > 0) {
-                        return;
-                    }
-
                     if (!slot.can_split()) {
                         // cannot fit the prompt in the current batch - will try next iter
                         if (batch.size() + slot.task->n_tokens() > n_batch) {

@@ -415,13 +415,16 @@ void main() {
     const uint gpr = p.ne00 / 128;
 
     if (gpr == 0) return;
-    if (g >= p.ne / 128) return;
+    if (g >= gpr * p.ne21 * p.ne22 * p.ne23) return;
 
     uint tmp = g;
     const uint ig  = tmp % gpr; tmp /= gpr;
     const uint i01 = tmp % p.ne01; tmp /= p.ne01;
-    const uint i02 = tmp % p.ne12;
-    const uint i03 = tmp / p.ne12;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
+
+    // Bail if dispatch slot maps past source extents (broadcast expansion)
+    if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
 
     const uint sb  = src0_idx(ig * 128, i01, i02, i03) + get_aoffset();
     const uint i1  = data_i[src1_idx(i01, fastmod(i02, p.ne11), fastmod(i03, p.ne12), 0) + get_boffset()] DATA_I_SWIZZLE;
@@ -546,13 +549,16 @@ void main() {
     const uint gpr = p.ne00 / 128;
 
     if (gpr == 0) return;
-    if (g >= p.ne / 128) return;
+    if (g >= gpr * p.ne21 * p.ne22 * p.ne23) return;
 
     uint tmp = g;
     const uint ig  = tmp % gpr; tmp /= gpr;
     const uint i01 = tmp % p.ne01; tmp /= p.ne01;
-    const uint i02 = tmp % p.ne12;
-    const uint i03 = tmp / p.ne12;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
+
+    // Bail if dispatch slot maps past source extents (broadcast expansion)
+    if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
 
     const uint sb  = src0_idx(ig * 128, i01, i02, i03) + get_aoffset();
     const uint i1  = data_i[src1_idx(i01, fastmod(i02, p.ne11), fastmod(i03, p.ne12), 0) + get_boffset()] DATA_I_SWIZZLE;
@@ -667,13 +673,16 @@ void main() {
     const uint gpr = p.ne00 / 128;
 
     if (gpr == 0) return;
-    if (g >= p.ne / 128) return;
+    if (g >= gpr * p.ne21 * p.ne22 * p.ne23) return;
 
     uint tmp = g;
     const uint ig  = tmp % gpr; tmp /= gpr;
     const uint i01 = tmp % p.ne01; tmp /= p.ne01;
-    const uint i02 = tmp % p.ne12;
-    const uint i03 = tmp / p.ne12;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
+
+    // Bail if dispatch slot maps past source extents (broadcast expansion)
+    if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
 
     const uint sb  = src0_idx(ig * 128, i01, i02, i03) + get_aoffset();
     const uint i1  = data_i[src1_idx(i01, fastmod(i02, p.ne11), fastmod(i03, p.ne12), 0) + get_boffset()] DATA_I_SWIZZLE;
@@ -747,13 +756,16 @@ void main() {
     const uint gpr = p.ne00 / 32;  // blocks per row
 
     if (gpr == 0) return;
-    if (g >= p.ne / 32) return;
+    if (g >= gpr * p.ne21 * p.ne22 * p.ne23) return;
 
     uint tmp = g;
     const uint ig  = tmp % gpr; tmp /= gpr;
     const uint i01 = tmp % p.ne01; tmp /= p.ne01;
-    const uint i02 = tmp % p.ne12;
-    const uint i03 = tmp / p.ne12;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
+
+    // Bail if dispatch slot maps past source extents (broadcast expansion)
+    if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
 
     const uint sb  = src0_idx(ig * 32, i01, i02, i03) + get_aoffset();
     const uint i1  = data_i[src1_idx(i01, fastmod(i02, p.ne11), fastmod(i03, p.ne12), 0) + get_boffset()] DATA_I_SWIZZLE;
