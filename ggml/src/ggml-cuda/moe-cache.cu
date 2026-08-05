@@ -363,6 +363,36 @@ static void moe_cache_budget_allocation(
     }
 }
 
+static void moe_cache_budget_reallocation(
+        moe_cache_device & device, size_t old_bytes, size_t new_bytes) {
+    if (!device.budget_registered || !device.budget_claimed || old_bytes == new_bytes) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_budget_mu);
+    auto found = g_physical_budgets.find(device.physical);
+    if (found == g_physical_budgets.end()) {
+        return;
+    }
+
+    moe_cache_physical_budget & state = found->second;
+    const size_t tracked_old = std::min(old_bytes, device.coordinator_allocated_bytes);
+    const size_t base = device.coordinator_allocated_bytes - tracked_old;
+    const size_t remaining = device.budget_limit > base
+        ? device.budget_limit - base : 0;
+    const size_t tracked_new = std::min(new_bytes, remaining);
+    device.coordinator_allocated_bytes = base + tracked_new;
+
+    if (tracked_new >= tracked_old) {
+        const size_t consumed = tracked_new - tracked_old;
+        state.outstanding_bytes = consumed <= state.outstanding_bytes
+            ? state.outstanding_bytes - consumed : 0;
+    } else {
+        const size_t released = tracked_old - tracked_new;
+        state.outstanding_bytes = released <= SIZE_MAX - state.outstanding_bytes
+            ? state.outstanding_bytes + released : SIZE_MAX;
+    }
+}
+
 static void moe_cache_budget_unregister(moe_cache_device & device) {
     if (!device.budget_registered) {
         return;
@@ -734,15 +764,16 @@ static bool moe_cache_grow_device(
     if (!moe_cache_cuda_ok(device, error, operation, false)) {
         return false;
     }
-    moe_cache_budget_allocation(device, requested, true);
     if (*pointer) {
+        const size_t old_capacity = capacity;
         if (!moe_cache_cuda_ok(
                     device, cudaFree(*pointer), "scratch replacement free", true)) {
             cudaFree(fresh);
-            moe_cache_budget_allocation(device, requested, false);
             return false;
         }
-        moe_cache_budget_allocation(device, capacity, false);
+        moe_cache_budget_reallocation(device, old_capacity, requested);
+    } else {
+        moe_cache_budget_allocation(device, requested, true);
     }
     *pointer = fresh;
     capacity = requested;
