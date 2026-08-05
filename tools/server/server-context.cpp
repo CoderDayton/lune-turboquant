@@ -64,12 +64,21 @@ static bool server_prepare_shared_draft_devices(common_params & params) {
     }
 
     std::vector<ggml_backend_dev_t> devices;
+    ggml_backend_dev_t configured_primary = nullptr;
     if (!params.devices.empty()) {
-        for (ggml_backend_dev_t device : params.devices) {
+        for (size_t i = 0; i < params.devices.size(); i++) {
+            ggml_backend_dev_t device = params.devices[i];
             if (device == nullptr) {
                 break;
             }
-            devices.push_back(device);
+            if (params.split_mode == LLAMA_SPLIT_MODE_NONE &&
+                params.main_gpu >= 0 && (size_t)params.main_gpu == i) {
+                configured_primary = device;
+            }
+            const enum ggml_backend_dev_type type = ggml_backend_dev_type(device);
+            if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                devices.push_back(device);
+            }
         }
     } else {
         for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
@@ -85,13 +94,21 @@ static bool server_prepare_shared_draft_devices(common_params & params) {
         return false;
     }
 
-    size_t target_primary = 0;
-    if (params.split_mode == LLAMA_SPLIT_MODE_NONE && params.main_gpu >= 0 && (size_t)params.main_gpu < devices.size()) {
-        target_primary = params.main_gpu;
+    size_t target_primary = SIZE_MAX;
+    if (params.split_mode == LLAMA_SPLIT_MODE_NONE && params.main_gpu >= 0) {
+        if (configured_primary) {
+            const auto found = std::find(devices.begin(), devices.end(), configured_primary);
+            if (found != devices.end()) {
+                target_primary = found - devices.begin();
+            }
+        } else if (params.devices.empty() && (size_t)params.main_gpu < devices.size()) {
+            target_primary = params.main_gpu;
+        }
     }
 
-    size_t draft_primary = target_primary;
+    size_t draft_primary = 0;
     size_t draft_free = 0;
+    bool found_draft = false;
     for (size_t i = 0; i < devices.size(); i++) {
         if (devices.size() > 1 && i == target_primary) {
             continue;
@@ -99,9 +116,10 @@ static bool server_prepare_shared_draft_devices(common_params & params) {
         size_t free = 0;
         size_t total = 0;
         ggml_backend_dev_memory(devices[i], &free, &total);
-        if (draft_primary == target_primary || free > draft_free) {
+        if (!found_draft || free > draft_free) {
             draft_primary = i;
             draft_free = free;
+            found_draft = true;
         }
     }
 
@@ -1139,6 +1157,8 @@ private:
         auto make_params_dft = [&]() {
             common_params params_dft = common_base_params_to_speculative(params_base);
             if (auto_draft_devices) {
+                params_dft.main_gpu = 0;
+                params_dft.split_mode = LLAMA_SPLIT_MODE_LAYER;
                 std::fill(std::begin(params_dft.tensor_split), std::end(params_dft.tensor_split), 0.0f);
                 params_dft.tensor_split[0] = 1.0f;
             }
