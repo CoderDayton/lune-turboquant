@@ -140,7 +140,7 @@ struct moe_cache_config {
     int max_devices = INT_MAX;
     int min_compute_capability = 700;
     bool serial_fill = true;
-    bool dedicated_mmv = true;
+    bool force_dedicated_mmv = false;
     int overlap_cpu_rows = -1;
     bool overlap_cpu_rows_explicit = false;
     std::string fail_stage;
@@ -560,7 +560,7 @@ static moe_cache_config moe_cache_read_config() {
         config.serial_fill = value != 0;
     }
     if (moe_cache_env_i64("GGML_CUDA_MOE_CACHE_DEDICATED_MMV", 0, 1, value)) {
-        config.dedicated_mmv = value != 0;
+        config.force_dedicated_mmv = value != 0;
     }
     if (moe_cache_env_i64("GGML_CUDA_MOE_CACHE_OVERLAP_CPU_ROWS", 0, 8, value)) {
         config.overlap_cpu_rows = (int)value;
@@ -2274,7 +2274,7 @@ static int moe_cache_dispatch(
         return 0;
     }
     const bool use_activation_map =
-        session.config.dedicated_mmv || !modulo_activation;
+        session.config.force_dedicated_mmv || !modulo_activation;
     const size_t ids_bytes = (size_t)n_hits * sizeof(int32_t) *
         (use_activation_map ? 2 : 1);
     const size_t act_bytes = (size_t)activation_rows * n_in * sizeof(float);
