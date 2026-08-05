@@ -192,7 +192,7 @@ The following environment variables are implementation controls, not a stable co
 | `GGML_CUDA_MOE_CACHE_OVERLAP_CPU_ROWS` | mode dependent | Rows retained on CPU only when every row is resident; `1` in auto and `0` when forced |
 | `GGML_CUDA_MOE_CACHE_MIN_CC` | mode dependent | Override the minimum compute capability encoded as `major * 100 + minor * 10` |
 
-Directly setting `GGML_CUDA_MOE_CACHE_MODE`, `GGML_CUDA_MOE_CACHE`, or `GGML_CUDA_MOE_CACHE_BUDGET_MB` controls the backend session but does not change the model loader's repacking choice. Prefer `--moe-cache` when using a llama.cpp program. `llama-bench` applies its selected cache arm before every model instance and overwrites these three raw backend variables. Use `--moe-cache` or `LLAMA_ARG_MOE_CACHE` to select its cache mode; raw backend mode variables cannot override the selected arm.
+Directly setting `GGML_CUDA_MOE_CACHE_MODE`, `GGML_CUDA_MOE_CACHE`, or `GGML_CUDA_MOE_CACHE_BUDGET_MB` controls the provider only when a program leaves the mode unspecified. Common applications do this for their implicit `auto` default, so provider settings affect fit and runtime consistently. An explicit `--moe-cache` or `LLAMA_ARG_MOE_CACHE` value takes precedence and also controls the model loader's repacking choice. `llama-bench` applies its selected cache arm before every model instance and overwrites the three raw backend variables; use `--moe-cache` or `LLAMA_ARG_MOE_CACHE` to select its benchmark mode.
 
 Keep `GGML_OP_OFFLOAD_MIN_BATCH` above the decode batch size. Setting it to `1` can make the scheduler offload the complete `MUL_MAT_ID` operation to CUDA before the CPU path can split cache hits from misses.
 

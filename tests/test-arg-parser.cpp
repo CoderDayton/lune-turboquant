@@ -199,6 +199,13 @@ static void test(void) {
 
     printf("test-arg-parser: test MoE cache and repack modes\n\n");
 
+    {
+        common_params mode_params;
+        assert(mode_params.moe_cache.mode == COMMON_MOE_CACHE_MODE_AUTO);
+        assert(mode_params.moe_cache.mode_explicit == false);
+        assert(common_context_params_to_llama(mode_params).moe_cache_mode == LLAMA_MOE_CACHE_MODE_UNSPECIFIED);
+    }
+
     const std::vector<std::vector<std::string>> invalid_moe_cache_args = {
         {"binary_name", "--moe-cache"},
         {"binary_name", "--moe-cache", "invalid"},
