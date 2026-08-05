@@ -48,7 +48,7 @@ struct ggml_moe_cache_api {
 
     int (*query_config)(int automatic, size_t budget_mib, struct ggml_moe_cache_config * config);
     int (*query_device)(void * device, const struct ggml_moe_cache_config * config, struct ggml_moe_cache_device_caps * caps);
-    int (*query_shape)(int wtype, int64_t n_in, int64_t n_out, size_t expert_size, struct ggml_moe_cache_shape_caps * caps);
+    int (*query_shape)(int wtype, int64_t n_in, int64_t n_out, int64_t n_expert, size_t expert_size, struct ggml_moe_cache_shape_caps * caps);
 
     // The scheduler owns one cache session. backends contains the scheduler's actual backend set, so the provider can use only selected CUDA devices.
     void * (*session_create)(void * const * backends, int n_backends, const struct ggml_moe_cache_config * config);

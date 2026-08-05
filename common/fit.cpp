@@ -225,7 +225,8 @@ static common_moe_cache_fit_result common_moe_cache_evaluate_fit(
         const size_t tensor_bytes = (size_t)tensor.n_expert * tensor.expert_size;
         ggml_moe_cache_shape_caps caps = {};
         const bool cacheable = tensor.expert_size >= min_expert_bytes &&
-            ggml_moe_cache.query_shape(tensor.type, tensor.n_input, tensor.n_output, tensor.expert_size, &caps);
+            ggml_moe_cache.query_shape(tensor.type, tensor.n_input, tensor.n_output,
+                    tensor.n_expert, tensor.expert_size, &caps);
         shape_inputs.push_back({tensor.type, tensor.expert_size, tensor_bytes,
                 caps.scratch_bytes, caps.pool_bytes, cacheable});
     }

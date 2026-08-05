@@ -424,13 +424,17 @@ static bool run_capability_queries(
     const size_t expert_size = ggml_row_size(GGML_TYPE_Q4_0, n_in) * n_out;
     ggml_moe_cache_shape_caps shape = {};
     ok &= ggml_moe_cache.query_shape(
-            GGML_TYPE_Q4_0, n_in, n_out, expert_size, &shape) == 1;
+            GGML_TYPE_Q4_0, n_in, n_out, 64, expert_size, &shape) == 1;
     ok &= shape.pool_bytes == expert_size * 64;
     ok &= shape.minimum_bytes == shape.scratch_bytes + shape.pool_bytes;
     ok &= ggml_moe_cache.query_shape(
-            GGML_TYPE_F32, n_in, n_out, expert_size, &shape) == 0;
+            GGML_TYPE_F32, n_in, n_out, 64, expert_size, &shape) == 0;
     ok &= ggml_moe_cache.query_shape(
-            GGML_TYPE_Q4_0, n_in, n_out, expert_size - 1, &shape) == 0;
+            GGML_TYPE_Q4_0, n_in, n_out, 64, expert_size - 1, &shape) == 0;
+    ok &= ggml_moe_cache.query_shape(
+            GGML_TYPE_Q4_0, n_in, n_out, 63, expert_size, &shape) == 0;
+    ok &= ggml_moe_cache.query_shape(
+            GGML_TYPE_Q4_0, n_in, n_out, 65, expert_size, &shape) == 1;
 
     set_env("GGML_CUDA_MOE_CACHE", "0");
     set_env("GGML_CUDA_MOE_CACHE_MODE", "off");
@@ -1892,6 +1896,52 @@ static bool run_exact_shape_inventory(
     return ok;
 }
 
+static bool run_complete_pool_allocation(
+        ggml_backend_t cuda, ggml_backend_t cpu) {
+    configure_cache(nullptr);
+    set_env("GGML_CUDA_MOE_CACHE_BUDGET_MB", "4");
+    void * session = create_direct_session(cuda, cpu);
+    if (!session) {
+        fprintf(stderr, "cache-complete-pools: failed to create session\n");
+        return false;
+    }
+
+    constexpr int64_t direct_n_in = 512;
+    constexpr int64_t common_n_out = 64;
+    constexpr int64_t rare_n_out = 128;
+    constexpr int64_t direct_n_expert = 64;
+    const size_t common_expert =
+        ggml_row_size(GGML_TYPE_Q4_0, direct_n_in) * common_n_out;
+    const size_t rare_expert =
+        ggml_row_size(GGML_TYPE_Q4_0, direct_n_in) * rare_n_out;
+    std::vector<std::vector<uint8_t>> common_tensors(
+            8, std::vector<uint8_t>(common_expert * direct_n_expert));
+    std::vector<uint8_t> rare_tensor(rare_expert * direct_n_expert);
+
+    ggml_moe_cache.session_enter(session);
+    for (const auto & tensor : common_tensors) {
+        (void)direct_begin_ready(
+                "blk.9.ffn_up_exps.weight", tensor.data(), common_expert,
+                direct_n_in, common_n_out, GGML_TYPE_Q4_0, direct_n_expert);
+    }
+    (void)direct_begin_ready(
+            "blk.9.ffn_down_exps.weight", rare_tensor.data(), rare_expert,
+            direct_n_in, rare_n_out, GGML_TYPE_Q4_0, direct_n_expert);
+
+    const bool common_ready = wait_for_direct_pool(
+            "blk.9.ffn_up_exps.weight", common_tensors[0].data(), common_expert,
+            direct_n_in, common_n_out, GGML_TYPE_Q4_0, direct_n_expert);
+    const bool rare_ready = direct_begin_ready(
+            "blk.9.ffn_down_exps.weight", rare_tensor.data(), rare_expert,
+            direct_n_in, rare_n_out, GGML_TYPE_Q4_0, direct_n_expert);
+    ggml_moe_cache.session_leave(session);
+    ggml_moe_cache.session_destroy(session);
+
+    const bool ok = common_ready && rare_ready;
+    printf("cache-complete-pools: %s\n", ok ? "OK" : "FAIL");
+    return ok;
+}
+
 static bool run_shared_budget(
         ggml_backend_t cuda, ggml_backend_t cpu,
         log_capture & capture) {
@@ -2370,6 +2420,7 @@ int main() {
     ok &= run_adaptive_cpu_overlap_policy(cuda, cpu, weights, capture);
     ok &= run_shape_liveness(cuda, cpu);
     ok &= run_exact_shape_inventory(cuda, cpu, capture);
+    ok &= run_complete_pool_allocation(cuda, cpu);
     ok &= run_shared_budget(cuda, cpu, capture);
     ok &= run_route_override(cuda_device, cuda, cpu);
     ok &= run_admission_policy(cuda, cpu, capture);

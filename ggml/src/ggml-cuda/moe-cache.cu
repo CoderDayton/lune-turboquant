@@ -919,9 +919,10 @@ static int moe_cache_query_device(
 }
 
 static int moe_cache_query_shape(
-        int wtype, int64_t n_in, int64_t n_out, size_t expert_size,
+        int wtype, int64_t n_in, int64_t n_out, int64_t n_expert,
+        size_t expert_size,
         ggml_moe_cache_shape_caps * result) {
-    if (!result || n_in <= 0 || n_out <= 0 ||
+    if (!result || n_in <= 0 || n_out <= 0 || n_expert < 64 ||
         !moe_cache_type_supported((ggml_type)wtype)) {
         return 0;
     }
@@ -1296,32 +1297,54 @@ static void moe_cache_build_pending(
     }
 
     std::vector<moe_cache_shape *> pending;
-    double total_weight = 0.0;
+    long double total_weight = 0.0;
+    size_t minimum_remaining = 0;
     for (moe_cache_shape & shape : device.shapes) {
         if (!shape.finished && shape.n_tensors > 0) {
             pending.push_back(&shape);
             total_weight +=
-                (double)shape.expert_size * (double)shape.n_tensors;
+                (long double)shape.expert_size * (long double)shape.n_tensors;
+            const size_t minimum = shape.expert_size * 64;
+            minimum_remaining = minimum <= SIZE_MAX - minimum_remaining
+                ? minimum_remaining + minimum : SIZE_MAX;
         }
     }
     std::sort(pending.begin(), pending.end(), [](const auto * lhs, const auto * rhs) {
-        const double lhs_weight =
-            (double)lhs->expert_size * (double)lhs->n_tensors;
-        const double rhs_weight =
-            (double)rhs->expert_size * (double)rhs->n_tensors;
+        const long double lhs_weight =
+            (long double)lhs->expert_size * (long double)lhs->n_tensors;
+        const long double rhs_weight =
+            (long double)rhs->expert_size * (long double)rhs->n_tensors;
         return lhs_weight > rhs_weight;
     });
 
+    auto weighted_share = [](size_t available, long double weight, long double total) {
+        if (available == 0 || weight <= 0.0 || total <= 0.0) {
+            return (size_t)0;
+        }
+        const long double value = (long double)available * weight / total;
+        return value >= (long double)available ? available : (size_t)value;
+    };
+    const bool complete_pools = minimum_remaining <= remaining;
     for (moe_cache_shape * shape : pending) {
-        const double weight =
-            (double)shape->expert_size * (double)shape->n_tensors;
-        const size_t share = total_weight > 0.0
-            ? (size_t)((double)remaining * weight / total_weight) : 0;
+        const long double weight =
+            (long double)shape->expert_size * (long double)shape->n_tensors;
+        const size_t minimum = shape->expert_size * 64;
+        size_t share = weighted_share(remaining, weight, total_weight);
+        if (complete_pools) {
+            const size_t extra = remaining - minimum_remaining;
+            const size_t bonus = weighted_share(extra, weight, total_weight);
+            share = minimum + bonus;
+        } else if (share < minimum && remaining >= minimum) {
+            share = minimum;
+        }
         const size_t before = device.allocated_bytes;
         moe_cache_allocate_pool(session, device, *shape, share);
         const size_t consumed = device.allocated_bytes - before;
         remaining = consumed <= remaining ? remaining - consumed : 0;
         total_weight -= weight;
+        if (complete_pools) {
+            minimum_remaining -= minimum;
+        }
     }
 }
 
@@ -1720,7 +1743,7 @@ static void * moe_cache_begin(
         !moe_cache_tensor_name_supported(name) || n_tokens < 1 ||
         n_tokens > session->config.max_batch ||
         expert_size < session->config.min_expert_bytes ||
-        n_in <= 0 || n_out <= 0 || n_expert <= 0 ||
+        n_in <= 0 || n_out <= 0 || n_expert < 64 ||
         !moe_cache_type_supported((ggml_type)wtype)) {
         return nullptr;
     }

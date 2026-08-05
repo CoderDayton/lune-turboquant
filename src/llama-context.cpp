@@ -635,7 +635,8 @@ static bool llama_model_has_cacheable_moe_weights(
 
         ggml_moe_cache_shape_caps shape = {};
         if (ggml_moe_cache.query_shape(
-                    tensor->type, tensor->ne[0], tensor->ne[1], tensor->nb[2], &shape)) {
+                    tensor->type, tensor->ne[0], tensor->ne[1], tensor->ne[2],
+                    tensor->nb[2], &shape)) {
             return true;
         }
     }
