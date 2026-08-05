@@ -1739,6 +1739,58 @@ static bool run_shape_liveness(
     return ok;
 }
 
+static bool run_exact_shape_inventory(
+        ggml_backend_t cuda, ggml_backend_t cpu,
+        log_capture & capture) {
+    configure_cache(nullptr);
+    set_env("GGML_CUDA_MOE_CACHE_BUDGET_MB", "16");
+    capture.clear();
+
+    void * session = create_direct_session(cuda, cpu);
+    if (!session) {
+        fprintf(stderr, "cache-shape-inventory: failed to create session\n");
+        return false;
+    }
+
+    constexpr int64_t direct_n_in = 256;
+    constexpr int64_t direct_n_out = 128;
+    constexpr int64_t first_n_expert = 64;
+    constexpr int64_t second_n_expert = 65;
+    const size_t expert_size =
+        ggml_row_size(GGML_TYPE_Q4_0, direct_n_in) * direct_n_out;
+    std::vector<uint8_t> first(expert_size * first_n_expert);
+    std::vector<uint8_t> second(expert_size * second_n_expert);
+
+    ggml_moe_cache.session_enter(session);
+    (void)direct_begin_ready(
+            "blk.7.ffn_up_exps.weight", first.data(), expert_size,
+            direct_n_in, direct_n_out, GGML_TYPE_Q4_0, first_n_expert);
+    (void)direct_begin_ready(
+            "blk.8.ffn_up_exps.weight", second.data(), expert_size,
+            direct_n_in, direct_n_out, GGML_TYPE_Q4_0, second_n_expert);
+    bool ready = false;
+    for (int step = 0; step < 40 && !ready; step++) {
+        ready |= direct_begin_ready(
+                "blk.7.ffn_up_exps.weight", first.data(), expert_size,
+                direct_n_in, direct_n_out, GGML_TYPE_Q4_0, first_n_expert);
+        ready |= direct_begin_ready(
+                "blk.8.ffn_up_exps.weight", second.data(), expert_size,
+                direct_n_in, direct_n_out, GGML_TYPE_Q4_0, second_n_expert);
+    }
+    ggml_moe_cache.session_leave(session);
+    ggml_moe_cache.session_destroy(session);
+
+    const std::string log = capture.get();
+    const bool ok = ready &&
+        max_field_value(log, "slots=") == first_n_expert + second_n_expert;
+    if (!ok) {
+        fprintf(stderr, "cache-shape-inventory: unexpected pool inventory\n%s",
+                log.c_str());
+    }
+    printf("cache-shape-inventory: %s\n", ok ? "OK" : "FAIL");
+    return ok;
+}
+
 static bool run_shared_budget(
         ggml_backend_t cuda, ggml_backend_t cpu,
         log_capture & capture) {
@@ -1808,14 +1860,53 @@ static bool run_shared_budget(
         ggml_moe_cache.session_leave(replacement);
         ggml_moe_cache.session_destroy(replacement);
     }
-    const bool released = max_field_value(capture.get(), "claimed ") >= 20;
+    const std::string replacement_log = capture.get();
+    const bool released = max_field_value(replacement_log, "claimed ") >= 20;
+
+    capture.clear();
+    const std::string high_reserve = std::to_string(free_mib - 8);
+    set_env("GGML_CUDA_MOE_CACHE_RESERVE_MB", high_reserve.c_str());
+    void * high = create_direct_session(cuda, cpu);
+    set_env("GGML_CUDA_MOE_CACHE_RESERVE_MB", reserve.c_str());
+    void * low = create_direct_session(cuda, cpu);
+    if (high) {
+        ggml_moe_cache.session_destroy(high);
+    }
+    void * after_high = create_direct_session(cuda, cpu);
+
+    bool low_ready = false;
+    if (low) {
+        ggml_moe_cache.session_enter(low);
+        low_ready = wait_for_direct_pool(
+                "blk.6.ffn_up_exps.weight", weights.data(), expert_size,
+                direct_n_in, direct_n_out, GGML_TYPE_Q4_0, direct_n_expert);
+        ggml_moe_cache.session_leave(low);
+    }
+    bool after_high_ready = false;
+    if (after_high) {
+        ggml_moe_cache.session_enter(after_high);
+        after_high_ready = wait_for_direct_pool(
+                "blk.6.ffn_up_exps.weight", weights.data(), expert_size,
+                direct_n_in, direct_n_out, GGML_TYPE_Q4_0, direct_n_expert);
+        ggml_moe_cache.session_leave(after_high);
+    }
+    if (after_high) {
+        ggml_moe_cache.session_destroy(after_high);
+    }
+    if (low) {
+        ggml_moe_cache.session_destroy(low);
+    }
+    const std::string reserve_log = capture.get();
+    const bool reserve_lowered = high && low && after_high &&
+        low_ready && after_high_ready &&
+        count_field_at_least(reserve_log, "claimed ", 8) == 2;
     configure_cache(nullptr);
 
     const bool ok = first_ready && second_ready && divided &&
-        replacement_ready && released;
+        replacement_ready && released && reserve_lowered;
     if (!ok) {
-        fprintf(stderr, "cache-shared-budget: unexpected claim behavior\n%s%s",
-                shared_log.c_str(), capture.get().c_str());
+        fprintf(stderr, "cache-shared-budget: unexpected claim behavior\n%s%s%s",
+                shared_log.c_str(), replacement_log.c_str(), reserve_log.c_str());
     }
     printf("cache-shared-budget: %s\n", ok ? "OK" : "FAIL");
     return ok;
@@ -2176,6 +2267,7 @@ int main() {
     ok &= run_explicit_session_config(cuda, cpu);
     ok &= run_cpu_overlap_policy(cuda, cpu, weights, capture);
     ok &= run_shape_liveness(cuda, cpu);
+    ok &= run_exact_shape_inventory(cuda, cpu, capture);
     ok &= run_shared_budget(cuda, cpu, capture);
     ok &= run_route_override(cuda_device, cuda, cpu);
     ok &= run_admission_policy(cuda, cpu, capture);

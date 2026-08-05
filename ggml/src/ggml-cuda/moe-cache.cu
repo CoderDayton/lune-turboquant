@@ -34,6 +34,7 @@ void ggml_moe_cache_register(const void * owner) {
 #include <memory>
 #include <mutex>
 #include <new>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -94,7 +95,7 @@ struct moe_cache_pool {
 struct moe_cache_shape {
     size_t expert_size = 0;
     int wtype = -1;
-    int64_t n_expert = 0;
+    uint64_t n_entries = 0;
     int64_t n_tensors = 0;
     int pool = -1;
     bool finished = false;
@@ -104,6 +105,7 @@ struct moe_cache_seen_tensor {
     size_t bytes = 0;
     size_t expert_size = 0;
     int wtype = -1;
+    int64_t n_expert = 0;
 };
 
 struct moe_cache_job {
@@ -170,6 +172,7 @@ struct moe_cache_device {
     bool budget_ready = false;
     bool budget_registered = false;
     bool budget_claimed = false;
+    size_t budget_reserve_bytes = 0;
     size_t budget_limit = 0;
     size_t coordinator_allocated_bytes = 0;
     size_t allocated_bytes = 0;
@@ -266,7 +269,7 @@ static std::atomic<int> g_session_count{0};
 struct moe_cache_physical_budget {
     int participants = 0;
     int prepared = 0;
-    size_t reserve_bytes = 0;
+    std::multiset<size_t> reserves;
     size_t outstanding_bytes = 0;
 };
 static std::mutex g_budget_mu;
@@ -281,17 +284,28 @@ static thread_local int g_session_suppressed = 0;
 static size_t moe_cache_trim_session(
         moe_cache_session & session, int physical_device);
 
+static void moe_cache_budget_remove_participant(
+        moe_cache_physical_budget & state, size_t reserve_bytes) {
+    auto reserve = state.reserves.find(reserve_bytes);
+    if (reserve != state.reserves.end()) {
+        state.reserves.erase(reserve);
+    }
+    state.participants = std::max(state.participants - 1, 0);
+}
+
 static bool moe_cache_budget_register(moe_cache_session & session) {
     std::lock_guard<std::mutex> lock(g_budget_mu);
     std::vector<moe_cache_device *> registered;
     try {
+        registered.reserve(session.devices.size());
         for (const auto & device_ptr : session.devices) {
             moe_cache_device & device = *device_ptr;
             moe_cache_physical_budget & state = g_physical_budgets[device.physical];
+            const size_t reserve_bytes = session.config.reserve_mb << 20;
+            state.reserves.insert(reserve_bytes);
             state.participants++;
-            state.reserve_bytes = std::max(
-                    state.reserve_bytes, session.config.reserve_mb << 20);
             device.budget_registered = true;
+            device.budget_reserve_bytes = reserve_bytes;
             registered.push_back(&device);
         }
         return true;
@@ -299,12 +313,22 @@ static bool moe_cache_budget_register(moe_cache_session & session) {
         for (moe_cache_device * device : registered) {
             auto found = g_physical_budgets.find(device->physical);
             if (found != g_physical_budgets.end()) {
-                found->second.participants--;
+                moe_cache_budget_remove_participant(
+                        found->second, device->budget_reserve_bytes);
                 if (found->second.participants == 0) {
                     g_physical_budgets.erase(found);
                 }
             }
             device->budget_registered = false;
+            device->budget_reserve_bytes = 0;
+        }
+        for (auto found = g_physical_budgets.begin();
+             found != g_physical_budgets.end();) {
+            if (found->second.participants == 0) {
+                found = g_physical_budgets.erase(found);
+            } else {
+                ++found;
+            }
         }
         return false;
     }
@@ -354,7 +378,8 @@ static void moe_cache_budget_unregister(moe_cache_device & device) {
                 ? state.outstanding_bytes - unallocated : 0;
             state.prepared = std::max(state.prepared - 1, 0);
         }
-        state.participants = std::max(state.participants - 1, 0);
+        moe_cache_budget_remove_participant(
+                state, device.budget_reserve_bytes);
         if (state.participants == 0) {
             g_physical_budgets.erase(found);
         }
@@ -362,6 +387,7 @@ static void moe_cache_budget_unregister(moe_cache_device & device) {
     device.budget_registered = false;
     device.budget_claimed = false;
     device.budget_ready = false;
+    device.budget_reserve_bytes = 0;
     device.budget_limit = 0;
     device.coordinator_allocated_bytes = 0;
 }
@@ -375,8 +401,10 @@ static size_t moe_cache_budget_claim(
         return 0;
     }
     moe_cache_physical_budget & state = found->second;
-    const size_t available_after_reserve = free_memory > state.reserve_bytes
-        ? free_memory - state.reserve_bytes : 0;
+    const size_t reserve_bytes = state.reserves.empty()
+        ? 0 : *state.reserves.rbegin();
+    const size_t available_after_reserve = free_memory > reserve_bytes
+        ? free_memory - reserve_bytes : 0;
     const size_t unclaimed = available_after_reserve > state.outstanding_bytes
         ? available_after_reserve - state.outstanding_bytes : 0;
     const int remaining_participants = std::max(
@@ -1096,20 +1124,15 @@ static bool moe_cache_prepare_budget(
 static bool moe_cache_allocate_pool(
         moe_cache_session & session, moe_cache_device & device,
         moe_cache_shape & shape, size_t budget) {
-    if (shape.expert_size == 0 || shape.n_tensors <= 0 || shape.n_expert <= 0) {
+    if (shape.expert_size == 0 || shape.n_tensors <= 0 || shape.n_entries == 0) {
         return false;
     }
     shape.finished = true;
 
-    int64_t max_entries = shape.n_tensors;
-    if (max_entries > INT_MAX / shape.n_expert) {
-        max_entries = INT_MAX;
-    } else {
-        max_entries *= shape.n_expert;
-    }
-
     size_t slots_by_budget = budget / shape.expert_size;
-    size_t slot_count = std::min<size_t>(slots_by_budget, (size_t)max_entries);
+    size_t slot_count = std::min<size_t>(
+            slots_by_budget,
+            (size_t)std::min<uint64_t>(shape.n_entries, INT_MAX));
     const size_t type_size = ggml_type_size((ggml_type)shape.wtype);
     if (type_size == 0 || shape.expert_size % type_size != 0) {
         return false;
@@ -1276,18 +1299,20 @@ static int moe_cache_discover_pool(
         }
     }
     if (!shape) {
-        device.shapes.push_back({expert_size, wtype, n_expert, 0, -1, false});
+        device.shapes.push_back({expert_size, wtype, 0, 0, -1, false});
         shape = &device.shapes.back();
-    } else {
-        shape->n_expert = std::max(shape->n_expert, n_expert);
     }
 
     const bool first_visit = device.seen_tensors.emplace(
-            host_base, moe_cache_seen_tensor{tensor_size, expert_size, wtype}).second;
+            host_base,
+            moe_cache_seen_tensor{tensor_size, expert_size, wtype, n_expert}).second;
     if (first_visit) {
         if (shape->n_tensors == 0 && shape->pool < 0) {
             shape->finished = false;
         }
+        const uint64_t entries = (uint64_t)n_expert;
+        shape->n_entries = entries <= UINT64_MAX - shape->n_entries
+            ? shape->n_entries + entries : UINT64_MAX;
         shape->n_tensors++;
         device.stable_visits = 0;
     } else {
@@ -2401,6 +2426,9 @@ static void moe_cache_invalidate_session(
                 for (moe_cache_shape & shape : device.shapes) {
                     if (shape.expert_size == it->second.expert_size &&
                         shape.wtype == it->second.wtype) {
+                        const uint64_t entries = (uint64_t)it->second.n_expert;
+                        shape.n_entries = entries <= shape.n_entries
+                            ? shape.n_entries - entries : 0;
                         shape.n_tensors = std::max<int64_t>(shape.n_tensors - 1, 0);
                         if (shape.n_tensors == 0 && shape.pool < 0) {
                             shape.finished = false;
