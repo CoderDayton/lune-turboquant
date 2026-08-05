@@ -578,6 +578,47 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
     }
 }
 
+static bool llama_model_has_cacheable_moe_weights(
+        const llama_model & model, llama_moe_cache_mode mode, size_t budget_mib) {
+    if (mode == LLAMA_MOE_CACHE_MODE_OFF ||
+        !ggml_moe_cache.query_config || !ggml_moe_cache.query_shape) {
+        return false;
+    }
+
+    ggml_moe_cache_config config = {};
+    const int automatic = mode == LLAMA_MOE_CACHE_MODE_UNSPECIFIED
+        ? -1 : mode == LLAMA_MOE_CACHE_MODE_AUTO;
+    if (!ggml_moe_cache.query_config(automatic, budget_mib, &config)) {
+        return false;
+    }
+
+    for (const auto & entry : model.tensors_by_name) {
+        const std::string & name = entry.first;
+        const ggml_tensor * tensor = entry.second;
+        if (!tensor || (name.find("_exps") == std::string::npos &&
+                        name.find("_chexps") == std::string::npos) ||
+            ggml_n_dims(tensor) != 3 || tensor->ne[0] <= 0 ||
+            tensor->ne[1] <= 0 || tensor->ne[2] <= 0 ||
+            tensor->nb[2] < config.min_expert_bytes) {
+            continue;
+        }
+
+        ggml_backend_buffer_t buffer = tensor->view_src
+            ? tensor->view_src->buffer : tensor->buffer;
+        if (!buffer || !ggml_backend_buffer_is_host(buffer) ||
+            ggml_backend_buffer_get_usage(buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
+            continue;
+        }
+
+        ggml_moe_cache_shape_caps shape = {};
+        if (ggml_moe_cache.query_shape(
+                    tensor->type, tensor->ne[0], tensor->ne[1], tensor->nb[2], &shape)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void llama_context::sched_reserve() {
     if (!sched_need_reserve) {
         return;
@@ -601,9 +642,15 @@ void llama_context::sched_reserve() {
     gf_res_prev.reset(new llm_graph_result(max_nodes));
     gf_res_reserve.reset(new llm_graph_result(max_nodes));
 
+    const ggml_moe_cache_mode moe_cache_mode = llama_model_has_cacheable_moe_weights(
+            model, (llama_moe_cache_mode)cparams.moe_cache_mode,
+            cparams.moe_cache_budget_mib)
+        ? (ggml_moe_cache_mode)cparams.moe_cache_mode
+        : GGML_MOE_CACHE_MODE_OFF;
+
     sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, cparams.pipeline_parallel, cparams.op_offload));
     ggml_backend_sched_set_moe_cache(
-            sched.get(), (ggml_moe_cache_mode)cparams.moe_cache_mode,
+            sched.get(), moe_cache_mode,
             cparams.moe_cache_budget_mib);
 
     llama_memory_context_ptr mctx;
@@ -641,7 +688,7 @@ void llama_context::sched_reserve() {
                 cparams.pipeline_parallel = false;
                 sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, cparams.op_offload));
                 ggml_backend_sched_set_moe_cache(
-                        sched.get(), (ggml_moe_cache_mode)cparams.moe_cache_mode,
+                        sched.get(), moe_cache_mode,
                         cparams.moe_cache_budget_mib);
                 gf = graph_reserve(n_tokens, n_seqs, n_outputs_pp, mctx.get());
             }
