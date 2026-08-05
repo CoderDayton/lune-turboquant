@@ -420,8 +420,8 @@ void main() {
     uint tmp = g;
     const uint ig  = tmp % gpr; tmp /= gpr;
     const uint i01 = tmp % p.ne01; tmp /= p.ne01;
-    const uint i02 = tmp % p.ne12;
-    const uint i03 = tmp / p.ne12;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
 
     // Bail if dispatch slot maps past source extents (broadcast expansion)
     if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
@@ -554,8 +554,8 @@ void main() {
     uint tmp = g;
     const uint ig  = tmp % gpr; tmp /= gpr;
     const uint i01 = tmp % p.ne01; tmp /= p.ne01;
-    const uint i02 = tmp % p.ne12;
-    const uint i03 = tmp / p.ne12;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
 
     // Bail if dispatch slot maps past source extents (broadcast expansion)
     if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
@@ -678,8 +678,8 @@ void main() {
     uint tmp = g;
     const uint ig  = tmp % gpr; tmp /= gpr;
     const uint i01 = tmp % p.ne01; tmp /= p.ne01;
-    const uint i02 = tmp % p.ne12;
-    const uint i03 = tmp / p.ne12;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
 
     // Bail if dispatch slot maps past source extents (broadcast expansion)
     if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
@@ -761,8 +761,8 @@ void main() {
     uint tmp = g;
     const uint ig  = tmp % gpr; tmp /= gpr;
     const uint i01 = tmp % p.ne01; tmp /= p.ne01;
-    const uint i02 = tmp % p.ne12;
-    const uint i03 = tmp / p.ne12;
+    const uint i02 = tmp % p.ne02;
+    const uint i03 = tmp / p.ne02;
 
     // Bail if dispatch slot maps past source extents (broadcast expansion)
     if (i01 >= p.ne01 || i02 >= p.ne02 || i03 >= p.ne03) return;
