@@ -410,6 +410,7 @@ static bool run_capability_queries(
     ok &= config.budget_bytes == 4u * 1024 * 1024;
     ok &= config.reserve_bytes == 0;
     ok &= config.min_expert_bytes == 1024;
+    ok &= config.overlap_cpu_rows == 0;
 
     ggml_moe_cache_device_caps device = {};
     ok &= ggml_moe_cache.query_device(cuda_device, &config, &device) == 1;
@@ -439,17 +440,20 @@ static bool run_capability_queries(
     set_env("GGML_CUDA_MOE_CACHE_MIN_EXPERT_KB", nullptr);
     set_env("GGML_CUDA_MOE_CACHE_MAX_BATCH", nullptr);
     set_env("GGML_CUDA_MOE_CACHE_MIN_CC", nullptr);
+    set_env("GGML_CUDA_MOE_CACHE_OVERLAP_CPU_ROWS", nullptr);
     ok &= ggml_moe_cache.query_config(1, 0, &config) == 1;
     ok &= config.min_devices == 2;
     ok &= config.min_compute_capability == 800;
     ok &= config.min_expert_bytes == 64u * 1024;
     ok &= config.max_batch == 8;
+    ok &= config.overlap_cpu_rows == -1;
 
     ok &= ggml_moe_cache.query_config(0, 0, &config) == 1;
     ok &= config.min_devices == 1;
     ok &= config.min_compute_capability == 700;
     ok &= config.min_expert_bytes == 1024u * 1024;
     ok &= config.max_batch == 1;
+    ok &= config.overlap_cpu_rows == -1;
     configure_cache(nullptr);
 
     printf("cache-capabilities: %s\n", ok ? "OK" : "FAIL");
@@ -1510,9 +1514,18 @@ static bool run_explicit_session_config(
     if (session) {
         ggml_moe_cache.session_destroy(session);
     }
+    bool invalid_rejected = true;
+    for (int overlap_cpu_rows : { -2, 9 }) {
+        config.overlap_cpu_rows = overlap_cpu_rows;
+        void * invalid = ggml_moe_cache.session_create(backends, 2, &config);
+        invalid_rejected &= invalid == nullptr;
+        if (invalid) {
+            ggml_moe_cache.session_destroy(invalid);
+        }
+    }
     configure_cache(nullptr);
-    printf("cache-explicit-config: %s\n", ok ? "OK" : "FAIL");
-    return ok;
+    printf("cache-explicit-config: %s\n", ok && invalid_rejected ? "OK" : "FAIL");
+    return ok && invalid_rejected;
 }
 
 static bool direct_begin_ready(
@@ -1563,10 +1576,11 @@ static int direct_plan_many(
         const char * name, const void * base, size_t expert_size,
         int64_t direct_n_in, int64_t direct_n_out,
         int direct_type, int64_t direct_n_expert,
-        const int32_t * experts, int n_experts) {
+        const int32_t * experts, int n_experts,
+        int64_t direct_n_tokens = 1) {
     void * node = ggml_moe_cache.begin(
             name, base, expert_size, direct_n_in, direct_n_out,
-            direct_type, direct_n_expert, 1);
+            direct_type, direct_n_expert, direct_n_tokens);
     if (!node) {
         return -1;
     }
@@ -1627,6 +1641,75 @@ static bool run_cpu_overlap_policy(
     ok &= has_positive_field(capture.get(), "cpu-overlap=");
     configure_cache(nullptr);
     printf("cache-cpu-overlap: %s\n", ok ? "OK" : "FAIL");
+    return ok;
+}
+
+static bool run_adaptive_cpu_overlap_policy(
+        ggml_backend_t cuda, ggml_backend_t cpu,
+        ggml_tensor * weights, log_capture & capture) {
+    configure_cache(nullptr, "8");
+    set_env("GGML_CUDA_MOE_CACHE_OVERLAP_CPU_ROWS", nullptr);
+    capture.clear();
+
+    void * session = create_direct_session(cuda, cpu);
+    if (!session) {
+        fprintf(stderr, "cache-cpu-overlap-auto: failed to create session\n");
+        configure_cache(nullptr);
+        return false;
+    }
+
+    const size_t expert_size = ggml_nbytes(weights) / weights->ne[2];
+    ggml_moe_cache.session_enter(session);
+    bool ok = wait_for_direct_pool(
+            weights->name, weights->data, expert_size,
+            weights->ne[0], weights->ne[1], weights->type, weights->ne[2]);
+    for (int32_t expert = 0; expert < 8 && ok; expert++) {
+        (void) direct_plan_one(
+                weights->name, weights->data, expert_size,
+                weights->ne[0], weights->ne[1], weights->type,
+                weights->ne[2], expert);
+        bool resident = false;
+        for (int attempt = 0; attempt < 100; attempt++) {
+            if (direct_plan_one(
+                    weights->name, weights->data, expert_size,
+                    weights->ne[0], weights->ne[1], weights->type,
+                    weights->ne[2], expert) == 1) {
+                resident = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        ok &= resident;
+    }
+
+    const int32_t single_token_experts[] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+    if (ok) {
+        ok = direct_plan_many(
+                weights->name, weights->data, expert_size,
+                weights->ne[0], weights->ne[1], weights->type,
+                weights->ne[2], single_token_experts, 8) == 6;
+    }
+
+    int32_t multi_token_experts[multi_n_used * multi_n_tokens];
+    for (int token = 0; token < multi_n_tokens; token++) {
+        for (int id = 0; id < multi_n_used; id++) {
+            multi_token_experts[token * multi_n_used + id] = id;
+        }
+    }
+    if (ok) {
+        ok = direct_plan_many(
+                weights->name, weights->data, expert_size,
+                weights->ne[0], weights->ne[1], weights->type,
+                weights->ne[2], multi_token_experts,
+                multi_n_used * multi_n_tokens, multi_n_tokens) == 30;
+    }
+    ggml_moe_cache.session_leave(session);
+    ggml_moe_cache.session_destroy(session);
+
+    ok &= capture.get().find("cpu-overlap=auto") != std::string::npos;
+    ok &= has_positive_field(capture.get(), "cpu-overlap=");
+    configure_cache(nullptr);
+    printf("cache-cpu-overlap-auto: %s\n", ok ? "OK" : "FAIL");
     return ok;
 }
 
@@ -2266,6 +2349,7 @@ int main() {
     ok &= run_scope_isolation(cuda, cpu, weights);
     ok &= run_explicit_session_config(cuda, cpu);
     ok &= run_cpu_overlap_policy(cuda, cpu, weights, capture);
+    ok &= run_adaptive_cpu_overlap_policy(cuda, cpu, weights, capture);
     ok &= run_shape_liveness(cuda, cpu);
     ok &= run_exact_shape_inventory(cuda, cpu, capture);
     ok &= run_shared_budget(cuda, cpu, capture);

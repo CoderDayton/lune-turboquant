@@ -141,7 +141,7 @@ struct moe_cache_config {
     int min_compute_capability = 700;
     bool serial_fill = true;
     bool dedicated_mmv = true;
-    int overlap_cpu_rows = 0;
+    int overlap_cpu_rows = -1;
     bool overlap_cpu_rows_explicit = false;
     std::string fail_stage;
 };
@@ -255,6 +255,7 @@ struct moe_cache_node {
     int64_t n_in = 0;
     int64_t n_out = 0;
     int64_t n_expert = 0;
+    int64_t n_tokens = 0;
     int wtype = -1;
     std::unique_lock<std::mutex> dispatch_lock;
     moe_cache_pin pins[64];
@@ -485,7 +486,7 @@ static void moe_cache_apply_mode_defaults(moe_cache_config & config) {
         config.max_batch = config.automatic ? 8 : 1;
     }
     if (!config.overlap_cpu_rows_explicit) {
-        config.overlap_cpu_rows = config.automatic ? 1 : 0;
+        config.overlap_cpu_rows = -1;
     }
 }
 
@@ -869,6 +870,7 @@ static int moe_cache_query_config(
     result->max_batch = config.max_batch;
     result->min_compute_capability = config.min_compute_capability;
     result->min_devices = config.automatic ? 2 : 1;
+    result->overlap_cpu_rows = config.overlap_cpu_rows;
     return 1;
 }
 
@@ -1241,12 +1243,14 @@ static bool moe_cache_allocate_pool(
     }
 
     if (!session.announced) {
-        MOE_CACHE_LOG("[moe-cache] enabled: mode=%s budget=%s reserve=%zu MiB min-expert=%zu KiB admit=%d/%d cpu-overlap=%d\n",
+        const std::string overlap_cpu_rows = session.config.overlap_cpu_rows < 0
+            ? "auto" : std::to_string(session.config.overlap_cpu_rows);
+        MOE_CACHE_LOG("[moe-cache] enabled: mode=%s budget=%s reserve=%zu MiB min-expert=%zu KiB admit=%d/%d cpu-overlap=%s\n",
                 session.config.automatic ? "auto" : "on",
                 session.config.budget_mb ? "fixed" : "free-minus-reserve",
                 session.config.reserve_mb, session.config.min_expert_bytes >> 10,
                 session.config.admit_after, session.config.readmit_after,
-                session.config.overlap_cpu_rows);
+                overlap_cpu_rows.c_str());
         session.announced = true;
     }
     MOE_CACHE_LOG("[moe-cache] CUDA%d pool[%d]: type=%s expert=%zu KiB slots=%zu total=%zu MiB\n",
@@ -1393,7 +1397,9 @@ static void * moe_cache_session_create(
                 supplied_config->max_batch < 1 || supplied_config->max_batch > 8 ||
                 supplied_config->min_devices < 1 ||
                 supplied_config->min_compute_capability < 0 ||
-                supplied_config->min_compute_capability > 999) {
+                supplied_config->min_compute_capability > 999 ||
+                supplied_config->overlap_cpu_rows < -1 ||
+                supplied_config->overlap_cpu_rows > 8) {
                 return nullptr;
             }
             config.enabled = true;
@@ -1403,9 +1409,7 @@ static void * moe_cache_session_create(
             config.min_expert_bytes = supplied_config->min_expert_bytes;
             config.max_batch = supplied_config->max_batch;
             config.min_compute_capability = supplied_config->min_compute_capability;
-            if (!config.overlap_cpu_rows_explicit) {
-                config.overlap_cpu_rows = config.automatic ? 1 : 0;
-            }
+            config.overlap_cpu_rows = supplied_config->overlap_cpu_rows;
         }
         if (!config.enabled) {
             return nullptr;
@@ -1975,9 +1979,35 @@ static void * moe_cache_begin(
     node->n_in = n_in;
     node->n_out = n_out;
     node->n_expert = n_expert;
+    node->n_tokens = n_tokens;
     node->wtype = wtype;
     node->dispatch_lock = std::move(dispatch_lock);
     return node.release();
+}
+
+static int moe_cache_overlap_rows(const moe_cache_node & node, int n_ids) {
+    const int configured = node.session->config.overlap_cpu_rows;
+    if (configured >= 0) {
+        return std::min(configured, std::max(0, n_ids - 1));
+    }
+    if (n_ids <= 1 || node.n_tokens <= 0 || n_ids % node.n_tokens != 0) {
+        return 0;
+    }
+
+    const int n_tokens = (int) node.n_tokens;
+    const int top_k = n_ids / n_tokens;
+    // Bound CPU work by expert bytes, token count, and one quarter of the node.
+    constexpr size_t bytes_per_token = 8u << 20;
+    const size_t work_budget = bytes_per_token * (size_t) n_tokens;
+    int rows = (int) std::min<size_t>(work_budget / node.expert_size, INT_MAX);
+    rows = std::max(rows, 1);
+    if (top_k >= 8) {
+        rows = std::max(rows, 2);
+    }
+
+    rows = std::min(rows, std::max(1, n_ids / 4));
+    rows = std::min(rows, std::max(2, n_tokens));
+    return std::min(rows, n_ids - 1);
 }
 
 static int moe_cache_plan(
@@ -2098,8 +2128,8 @@ static int moe_cache_plan(
         inserts_left--;
         wake_worker = true;
     }
-    if (hits == n_ids && session.config.overlap_cpu_rows > 0) {
-        int rows = std::min(session.config.overlap_cpu_rows, n_ids - 1);
+    if (hits == n_ids) {
+        int rows = moe_cache_overlap_rows(*node, n_ids);
         for (int index = n_ids - 1; index >= 0 && rows > 0; index--) {
             if (slot_indices[index] < 0 || node->n_pins <= 0) {
                 continue;

@@ -16,6 +16,8 @@ struct ggml_moe_cache_config {
     int32_t max_batch;
     int32_t min_compute_capability;
     int32_t min_devices;
+    // -1 selects the provider policy; 0..8 is a fixed total per node.
+    int32_t overlap_cpu_rows;
 };
 
 struct ggml_moe_cache_device_caps {
