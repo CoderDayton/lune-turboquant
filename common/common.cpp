@@ -1242,6 +1242,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         common_fit_params(params.model.path.c_str(), &mparams, &cparams,
             params.tensor_split,
             params.tensor_buft_overrides.data(),
+            &params.moe_cache,
             params.fit_params_target.data(),
             params.fit_params_min_ctx,
             params.verbosity >= LOG_LEVEL_DEBUG ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
@@ -1666,6 +1667,19 @@ struct llama_context_params common_context_params_to_llama(const common_params &
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
+
+    switch (params.moe_cache.mode) {
+        case COMMON_MOE_CACHE_MODE_OFF:
+            cparams.moe_cache_mode = LLAMA_MOE_CACHE_MODE_OFF;
+            break;
+        case COMMON_MOE_CACHE_MODE_AUTO:
+            cparams.moe_cache_mode = LLAMA_MOE_CACHE_MODE_AUTO;
+            break;
+        case COMMON_MOE_CACHE_MODE_ON:
+            cparams.moe_cache_mode = LLAMA_MOE_CACHE_MODE_ON;
+            break;
+    }
+    cparams.moe_cache_budget_mib = params.moe_cache.budget_mib;
 
     return cparams;
 }

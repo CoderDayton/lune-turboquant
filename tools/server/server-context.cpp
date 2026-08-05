@@ -54,6 +54,69 @@ static uint32_t server_n_outputs_max(const common_params & params) {
     return std::max<uint32_t>(1, std::min<uint64_t>(n_batch, n_outputs));
 }
 
+static bool server_prepare_shared_draft_devices(common_params & params) {
+    const auto & types = params.speculative.types;
+    const bool has_shared_draft =
+        std::find(types.begin(), types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != types.end() ||
+        std::find(types.begin(), types.end(), COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK) != types.end();
+    if (!has_shared_draft || !params.speculative.draft.devices.empty()) {
+        return false;
+    }
+
+    std::vector<ggml_backend_dev_t> devices;
+    if (!params.devices.empty()) {
+        for (ggml_backend_dev_t device : params.devices) {
+            if (device == nullptr) {
+                break;
+            }
+            devices.push_back(device);
+        }
+    } else {
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t device = ggml_backend_dev_get(i);
+            const enum ggml_backend_dev_type type = ggml_backend_dev_type(device);
+            if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                devices.push_back(device);
+            }
+        }
+    }
+
+    if (devices.empty()) {
+        return false;
+    }
+
+    size_t target_primary = 0;
+    if (params.split_mode == LLAMA_SPLIT_MODE_NONE && params.main_gpu >= 0 && (size_t)params.main_gpu < devices.size()) {
+        target_primary = params.main_gpu;
+    }
+
+    size_t draft_primary = target_primary;
+    size_t draft_free = 0;
+    for (size_t i = 0; i < devices.size(); i++) {
+        if (devices.size() > 1 && i == target_primary) {
+            continue;
+        }
+        size_t free = 0;
+        size_t total = 0;
+        ggml_backend_dev_memory(devices[i], &free, &total);
+        if (draft_primary == target_primary || free > draft_free) {
+            draft_primary = i;
+            draft_free = free;
+        }
+    }
+
+    params.speculative.draft.devices.push_back(devices[draft_primary]);
+    for (size_t i = 0; i < devices.size(); i++) {
+        if (i != draft_primary) {
+            params.speculative.draft.devices.push_back(devices[i]);
+        }
+    }
+    params.speculative.draft.devices.push_back(nullptr);
+
+    SRV_INF("[spec] auto-selected %s as the primary draft device\n", ggml_backend_dev_name(devices[draft_primary]));
+    return true;
+}
+
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
 enum slot_state {
     SLOT_STATE_IDLE,
@@ -1071,6 +1134,16 @@ private:
                                         params_base.speculative.types.end(),
                                         COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
         const bool has_spec = has_draft || spec_mtp;
+        const bool auto_draft_devices = server_prepare_shared_draft_devices(params_base);
+
+        auto make_params_dft = [&]() {
+            common_params params_dft = common_base_params_to_speculative(params_base);
+            if (auto_draft_devices) {
+                std::fill(std::begin(params_dft.tensor_split), std::end(params_dft.tensor_split), 0.0f);
+                params_dft.tensor_split[0] = 1.0f;
+            }
+            return params_dft;
+        };
 
         if (callback_state) {
             std::vector<std::string> stages = {"text_model"};
@@ -1143,7 +1216,7 @@ private:
                 // MTP draft context lives on the target model, only context+compute are new
                 bool measure_model_bytes = has_draft;
 
-                common_params params_dft = common_base_params_to_speculative(params_base);
+                common_params params_dft = make_params_dft();
 
                 auto mparams_dft = common_model_params_to_llama(params_dft);
                 auto cparams_dft = common_context_params_to_llama(params_dft);
@@ -1157,34 +1230,53 @@ private:
                 uint32_t hp_nct = 0;
                 uint32_t hp_nex = 0;
                 try {
-                    auto dmd = common_get_device_memory_data(
+                    auto mparams_tgt = common_model_params_to_llama(params_base);
+                    auto cparams_tgt = common_context_params_to_llama(params_base);
+                    auto dmd = common_get_device_memory_data_with_parent(
                         params_dft.model.path.c_str(), &mparams_dft, &cparams_dft,
+                        params_base.model.path.c_str(), &mparams_tgt, &cparams_tgt,
                         devs, hp_ngl, hp_nct, hp_nex, GGML_LOG_LEVEL_ERROR);
 
                     GGML_ASSERT(!params_base.fit_params_target.empty());
                     size_t total = 0;
 
-                    std::vector<ggml_backend_dev_t> tgt_devices = params.devices;
+                    std::vector<ggml_backend_dev_t> tgt_devices;
+                    for (ggml_backend_dev_t device : params_base.devices) {
+                        if (device == nullptr) {
+                            break;
+                        }
+                        tgt_devices.push_back(device);
+                    }
 
                     if (tgt_devices.empty()) {
-                        for(size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-                           tgt_devices.push_back(ggml_backend_dev_get(i));
+                        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+                            ggml_backend_dev_t device = ggml_backend_dev_get(i);
+                            const enum ggml_backend_dev_type type = ggml_backend_dev_type(device);
+                            if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                                tgt_devices.push_back(device);
+                            }
                         }
                     }
 
                     for (size_t j = 0; j < devs.size(); ++j) {
                         const size_t bytes = (measure_model_bytes ? dmd[j].model : 0) + dmd[j].context + dmd[j].compute;
                         total += bytes;
+                        if (bytes == 0) {
+                            continue;
+                        }
                         for (size_t i = 0; i < tgt_devices.size(); i++) {
                             if (tgt_devices[i] == devs[j]) {
-                                SRV_DBG("[spec] adding %.2f MiB to fit_params_target for device %s\n",
+                                SRV_INF("[spec] reserving %.2f MiB on %s for the speculative model and context\n",
                                         bytes / (1024.0 * 1024.0), ggml_backend_dev_name(devs[j]));
+                                if (bytes > SIZE_MAX - params_base.fit_params_target[i]) {
+                                    throw std::runtime_error("speculative memory margin overflowed");
+                                }
                                 params_base.fit_params_target[i] += bytes;
                                 break;
                             }
                         }
                     }
-                    SRV_TRC("[spec] estimated memory usage of %s is %.2f MiB\n",
+                    SRV_INF("[spec] estimated memory usage of %s is %.2f MiB\n",
                             has_draft ? "draft model" : "MTP context",
                             total / (1024.0 * 1024.0));
                 } catch (const std::exception & e) {
@@ -1227,7 +1319,7 @@ private:
             load_progress_spec.t_last_load_progress_ms = 0;  // reset so internal cbs aren't delayed
 
             {
-                common_params params_dft = common_base_params_to_speculative(params_base);
+                common_params params_dft = make_params_dft();
 
                 // progress callback
                 params_dft.load_progress_callback           = load_progress_callback;
