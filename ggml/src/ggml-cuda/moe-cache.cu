@@ -478,6 +478,10 @@ static int moe_cache_min_compute_capability(bool automatic) {
     return result;
 }
 
+static size_t moe_cache_default_min_expert_bytes(int compute_capability) {
+    return compute_capability >= 800 ? 64u << 10 : 1u << 20;
+}
+
 static void moe_cache_apply_mode_defaults(moe_cache_config & config) {
     if (!config.min_expert_explicit) {
         config.min_expert_bytes = config.automatic ? 64u << 10 : 1u << 20;
@@ -867,6 +871,7 @@ static int moe_cache_query_config(
     result->budget_bytes = config.budget_mb << 20;
     result->reserve_bytes = config.reserve_mb << 20;
     result->min_expert_bytes = config.min_expert_bytes;
+    result->min_expert_explicit = config.min_expert_explicit;
     result->max_batch = config.max_batch;
     result->min_compute_capability = config.min_compute_capability;
     result->min_devices = config.automatic ? 2 : 1;
@@ -907,6 +912,9 @@ static int moe_cache_query_device(
     result->logical_device = logical;
     result->physical_device = cuda_device.physical_device;
     result->compute_capability = cuda_device.cc;
+    result->min_expert_bytes = config->min_expert_explicit
+        ? config->min_expert_bytes
+        : moe_cache_default_min_expert_bytes(cuda_device.cc);
     return 1;
 }
 
@@ -1394,6 +1402,8 @@ static void * moe_cache_session_create(
             if (supplied_config->budget_bytes % MiB != 0 ||
                 supplied_config->reserve_bytes % MiB != 0 ||
                 supplied_config->min_expert_bytes == 0 ||
+                supplied_config->min_expert_explicit < 0 ||
+                supplied_config->min_expert_explicit > 1 ||
                 supplied_config->max_batch < 1 || supplied_config->max_batch > 8 ||
                 supplied_config->min_devices < 1 ||
                 supplied_config->min_compute_capability < 0 ||
@@ -1407,6 +1417,7 @@ static void * moe_cache_session_create(
             config.budget_mb = supplied_config->budget_bytes / MiB;
             config.reserve_mb = supplied_config->reserve_bytes / MiB;
             config.min_expert_bytes = supplied_config->min_expert_bytes;
+            config.min_expert_explicit = supplied_config->min_expert_explicit;
             config.max_batch = supplied_config->max_batch;
             config.min_compute_capability = supplied_config->min_compute_capability;
             config.overlap_cpu_rows = supplied_config->overlap_cpu_rows;
@@ -1422,6 +1433,7 @@ static void * moe_cache_session_create(
         session->config = std::move(config);
 
         std::unordered_set<int> seen_devices;
+        size_t default_min_expert_bytes = 64u << 10;
         for (int index = 0; index < n_backends &&
                             (int)session->devices.size() < session->config.max_devices; index++) {
             ggml_backend_t backend = (ggml_backend_t)backends[index];
@@ -1457,12 +1469,18 @@ static void * moe_cache_session_create(
                 continue;
             }
 
+            default_min_expert_bytes = std::max(
+                    default_min_expert_bytes,
+                    moe_cache_default_min_expert_bytes(capability));
             session->devices.emplace_back(new moe_cache_device(logical, physical));
         }
 
         if (session->devices.empty() ||
             (session->config.automatic && session->devices.size() < 2)) {
             return nullptr;
+        }
+        if (!session->config.min_expert_explicit) {
+            session->config.min_expert_bytes = default_min_expert_bytes;
         }
         if (!moe_cache_budget_register(*session)) {
             return nullptr;

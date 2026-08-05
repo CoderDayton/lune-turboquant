@@ -14,6 +14,7 @@
 
 #include "../ggml/src/ggml-backend-moe-cache.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
 #include <cstring>
@@ -579,9 +580,11 @@ void llama_context::resolve_fused_ops(const llama_memory_context_i * mctx, uint3
 }
 
 static bool llama_model_has_cacheable_moe_weights(
-        const llama_model & model, llama_moe_cache_mode mode, size_t budget_mib) {
+        const llama_model & model, llama_moe_cache_mode mode, size_t budget_mib,
+        const std::vector<ggml_backend_t> & backends) {
     if (mode == LLAMA_MOE_CACHE_MODE_OFF ||
-        !ggml_moe_cache.query_config || !ggml_moe_cache.query_shape) {
+        !ggml_moe_cache.query_config || !ggml_moe_cache.query_device ||
+        !ggml_moe_cache.query_shape) {
         return false;
     }
 
@@ -592,6 +595,26 @@ static bool llama_model_has_cacheable_moe_weights(
         return false;
     }
 
+    std::vector<int32_t> physical_devices;
+    size_t min_expert_bytes = 0;
+    for (ggml_backend_t backend : backends) {
+        if (!backend) {
+            continue;
+        }
+        ggml_moe_cache_device_caps caps = {};
+        if (!ggml_moe_cache.query_device(
+                    ggml_backend_get_device(backend), &config, &caps) ||
+            std::find(physical_devices.begin(), physical_devices.end(),
+                    caps.physical_device) != physical_devices.end()) {
+            continue;
+        }
+        physical_devices.push_back(caps.physical_device);
+        min_expert_bytes = std::max(min_expert_bytes, caps.min_expert_bytes);
+    }
+    if ((int) physical_devices.size() < config.min_devices) {
+        return false;
+    }
+
     for (const auto & entry : model.tensors_by_name) {
         const std::string & name = entry.first;
         const ggml_tensor * tensor = entry.second;
@@ -599,7 +622,7 @@ static bool llama_model_has_cacheable_moe_weights(
                         name.find("_chexps") == std::string::npos) ||
             ggml_n_dims(tensor) != 3 || tensor->ne[0] <= 0 ||
             tensor->ne[1] <= 0 || tensor->ne[2] <= 0 ||
-            tensor->nb[2] < config.min_expert_bytes) {
+            tensor->nb[2] < min_expert_bytes) {
             continue;
         }
 
@@ -644,7 +667,7 @@ void llama_context::sched_reserve() {
 
     const ggml_moe_cache_mode moe_cache_mode = llama_model_has_cacheable_moe_weights(
             model, (llama_moe_cache_mode)cparams.moe_cache_mode,
-            cparams.moe_cache_budget_mib)
+            cparams.moe_cache_budget_mib, backend_ptrs)
         ? (ggml_moe_cache_mode)cparams.moe_cache_mode
         : GGML_MOE_CACHE_MODE_OFF;
 

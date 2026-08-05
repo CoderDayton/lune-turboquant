@@ -13,6 +13,8 @@ struct ggml_moe_cache_config {
     size_t budget_bytes;
     size_t reserve_bytes;
     size_t min_expert_bytes;
+    // 0 lets each selected device raise or lower the admission floor.
+    int32_t min_expert_explicit;
     int32_t max_batch;
     int32_t min_compute_capability;
     int32_t min_devices;
@@ -24,6 +26,8 @@ struct ggml_moe_cache_device_caps {
     int32_t logical_device;
     int32_t physical_device;
     int32_t compute_capability;
+    // Effective admission floor for this device and configuration.
+    size_t min_expert_bytes;
 };
 
 struct ggml_moe_cache_shape_caps {

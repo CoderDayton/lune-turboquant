@@ -199,6 +199,7 @@ static common_moe_cache_fit_result common_moe_cache_evaluate_fit(
     }
 
     std::vector<common_moe_cache_fit_device_input> device_inputs;
+    size_t min_expert_bytes = 0;
     for (size_t index = 0; index < devices.size(); index++) {
         ggml_moe_cache_device_caps caps = {};
         if (!ggml_moe_cache.query_device(devices[index], &config, &caps)) {
@@ -210,6 +211,7 @@ static common_moe_cache_fit_result common_moe_cache_evaluate_fit(
         }
         device_inputs.push_back({caps.physical_device, caps.compute_capability,
                 memory[index].free - margins[index], memory[index].mb.total()});
+        min_expert_bytes = std::max(min_expert_bytes, caps.min_expert_bytes);
     }
 
     std::vector<common_moe_cache_fit_shape_input> shape_inputs;
@@ -222,7 +224,7 @@ static common_moe_cache_fit_result common_moe_cache_evaluate_fit(
         }
         const size_t tensor_bytes = (size_t)tensor.n_expert * tensor.expert_size;
         ggml_moe_cache_shape_caps caps = {};
-        const bool cacheable = tensor.expert_size >= config.min_expert_bytes &&
+        const bool cacheable = tensor.expert_size >= min_expert_bytes &&
             ggml_moe_cache.query_shape(tensor.type, tensor.n_input, tensor.n_output, tensor.expert_size, &caps);
         shape_inputs.push_back({tensor.type, tensor.expert_size, tensor_bytes,
                 caps.scratch_bytes, caps.pool_bytes, cacheable});

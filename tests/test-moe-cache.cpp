@@ -410,6 +410,7 @@ static bool run_capability_queries(
     ok &= config.budget_bytes == 4u * 1024 * 1024;
     ok &= config.reserve_bytes == 0;
     ok &= config.min_expert_bytes == 1024;
+    ok &= config.min_expert_explicit == 1;
     ok &= config.overlap_cpu_rows == 0;
 
     ggml_moe_cache_device_caps device = {};
@@ -417,6 +418,7 @@ static bool run_capability_queries(
     ok &= device.logical_device >= 0;
     ok &= device.physical_device >= 0;
     ok &= device.compute_capability >= config.min_compute_capability;
+    ok &= device.min_expert_bytes == 1024;
     ok &= ggml_moe_cache.query_device(cpu->device, &config, &device) == 0;
 
     const size_t expert_size = ggml_row_size(GGML_TYPE_Q4_0, n_in) * n_out;
@@ -445,15 +447,22 @@ static bool run_capability_queries(
     ok &= config.min_devices == 2;
     ok &= config.min_compute_capability == 800;
     ok &= config.min_expert_bytes == 64u * 1024;
+    ok &= config.min_expert_explicit == 0;
     ok &= config.max_batch == 8;
     ok &= config.overlap_cpu_rows == -1;
+    ok &= ggml_moe_cache.query_device(cuda_device, &config, &device) == 1;
+    ok &= device.min_expert_bytes == 64u * 1024;
 
     ok &= ggml_moe_cache.query_config(0, 0, &config) == 1;
     ok &= config.min_devices == 1;
     ok &= config.min_compute_capability == 700;
     ok &= config.min_expert_bytes == 1024u * 1024;
+    ok &= config.min_expert_explicit == 0;
     ok &= config.max_batch == 1;
     ok &= config.overlap_cpu_rows == -1;
+    ok &= ggml_moe_cache.query_device(cuda_device, &config, &device) == 1;
+    ok &= device.min_expert_bytes == (device.compute_capability >= 800
+            ? 64u * 1024 : 1024u * 1024);
     configure_cache(nullptr);
 
     printf("cache-capabilities: %s\n", ok ? "OK" : "FAIL");
@@ -1517,6 +1526,15 @@ static bool run_explicit_session_config(
     bool invalid_rejected = true;
     for (int overlap_cpu_rows : { -2, 9 }) {
         config.overlap_cpu_rows = overlap_cpu_rows;
+        void * invalid = ggml_moe_cache.session_create(backends, 2, &config);
+        invalid_rejected &= invalid == nullptr;
+        if (invalid) {
+            ggml_moe_cache.session_destroy(invalid);
+        }
+    }
+    config.overlap_cpu_rows = 0;
+    for (int min_expert_explicit : { -1, 2 }) {
+        config.min_expert_explicit = min_expert_explicit;
         void * invalid = ggml_moe_cache.session_create(backends, 2, &config);
         invalid_rejected &= invalid == nullptr;
         if (invalid) {
