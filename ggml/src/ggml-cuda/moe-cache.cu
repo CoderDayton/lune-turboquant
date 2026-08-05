@@ -140,6 +140,7 @@ struct moe_cache_config {
     int max_devices = INT_MAX;
     int min_compute_capability = 700;
     bool serial_fill = true;
+    bool serial_fill_explicit = false;
     bool force_dedicated_mmv = false;
     int overlap_cpu_rows = -1;
     bool overlap_cpu_rows_explicit = false;
@@ -558,6 +559,7 @@ static moe_cache_config moe_cache_read_config() {
     }
     if (moe_cache_env_i64("GGML_CUDA_MOE_CACHE_SERIAL_FILL", 0, 1, value)) {
         config.serial_fill = value != 0;
+        config.serial_fill_explicit = true;
     }
     if (moe_cache_env_i64("GGML_CUDA_MOE_CACHE_DEDICATED_MMV", 0, 1, value)) {
         config.force_dedicated_mmv = value != 0;
@@ -1254,12 +1256,13 @@ static bool moe_cache_allocate_pool(
     if (!session.announced) {
         const std::string overlap_cpu_rows = session.config.overlap_cpu_rows < 0
             ? "auto" : std::to_string(session.config.overlap_cpu_rows);
-        MOE_CACHE_LOG("[moe-cache] enabled: mode=%s budget=%s reserve=%zu MiB min-expert=%zu KiB admit=%d/%d cpu-overlap=%s\n",
+        MOE_CACHE_LOG("[moe-cache] enabled: mode=%s budget=%s reserve=%zu MiB min-expert=%zu KiB admit=%d/%d cpu-overlap=%s fills=%s\n",
                 session.config.automatic ? "auto" : "on",
                 session.config.budget_mb ? "fixed" : "free-minus-reserve",
                 session.config.reserve_mb, session.config.min_expert_bytes >> 10,
                 session.config.admit_after, session.config.readmit_after,
-                overlap_cpu_rows.c_str());
+                overlap_cpu_rows.c_str(),
+                session.config.serial_fill ? "serial" : "parallel");
         session.announced = true;
     }
     MOE_CACHE_LOG("[moe-cache] CUDA%d pool[%d]: type=%s expert=%zu KiB slots=%zu total=%zu MiB\n",
@@ -1457,6 +1460,7 @@ static void * moe_cache_session_create(
 
         std::unordered_set<int> seen_devices;
         size_t default_min_expert_bytes = 64u << 10;
+        int minimum_capability = INT_MAX;
         for (int index = 0; index < n_backends &&
                             (int)session->devices.size() < session->config.max_devices; index++) {
             ggml_backend_t backend = (ggml_backend_t)backends[index];
@@ -1495,6 +1499,7 @@ static void * moe_cache_session_create(
             default_min_expert_bytes = std::max(
                     default_min_expert_bytes,
                     moe_cache_default_min_expert_bytes(capability));
+            minimum_capability = std::min(minimum_capability, capability);
             session->devices.emplace_back(new moe_cache_device(logical, physical));
         }
 
@@ -1504,6 +1509,10 @@ static void * moe_cache_session_create(
         }
         if (!session->config.min_expert_explicit) {
             session->config.min_expert_bytes = default_min_expert_bytes;
+        }
+        if (!session->config.serial_fill_explicit) {
+            session->config.serial_fill =
+                session->devices.size() < 2 || minimum_capability < 800;
         }
         if (!moe_cache_budget_register(*session)) {
             return nullptr;

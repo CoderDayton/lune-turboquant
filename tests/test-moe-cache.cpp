@@ -390,6 +390,7 @@ static void configure_cache(
     set_env("GGML_CUDA_MOE_CACHE_STATS", "1");
     set_env("GGML_CUDA_MOE_CACHE_NDEV", "1");
     set_env("GGML_CUDA_MOE_CACHE_MIN_CC", "0");
+    set_env("GGML_CUDA_MOE_CACHE_SERIAL_FILL", nullptr);
     set_env("GGML_CUDA_MOE_CACHE_DEDICATED_MMV", dedicated_mmv);
     set_env("GGML_CUDA_MOE_CACHE_OVERLAP_CPU_ROWS", "0");
     set_env("GGML_CUDA_MOE_CACHE_FAIL", fail_stage);
@@ -1887,7 +1888,8 @@ static bool run_exact_shape_inventory(
 
     const std::string log = capture.get();
     const bool ok = ready &&
-        max_field_value(log, "slots=") == first_n_expert + second_n_expert;
+        max_field_value(log, "slots=") == first_n_expert + second_n_expert &&
+        log.find("fills=serial") != std::string::npos;
     if (!ok) {
         fprintf(stderr, "cache-shape-inventory: unexpected pool inventory\n%s",
                 log.c_str());
@@ -2065,7 +2067,8 @@ static bool run_shared_budget(
 
 static bool run_route_override(
         ggml_backend_dev_t first_device,
-        ggml_backend_t cuda, ggml_backend_t cpu) {
+        ggml_backend_t cuda, ggml_backend_t cpu,
+        log_capture & capture) {
     ggml_backend_dev_t second_device =
         find_other_cuda_device(first_device);
     if (!second_device) {
@@ -2089,6 +2092,7 @@ static bool run_route_override(
     configure_cache(nullptr);
     set_env("GGML_CUDA_MOE_CACHE_BUDGET_MB", "8");
     set_env("GGML_CUDA_MOE_CACHE_NDEV", "2");
+    capture.clear();
     void * backends[] = { cuda, second_cuda, cpu };
     void * session = ggml_moe_cache.session_create(backends, 3, nullptr);
     if (!session) {
@@ -2118,10 +2122,20 @@ static bool run_route_override(
             "blk.4.ffn_down_exps.weight", shape_b.data(), shape_b_expert,
             shape_b_in, shape_b_out, GGML_TYPE_Q4_0, shape_experts);
     ggml_moe_cache.session_leave(session);
+
+    ggml_moe_cache_config config = {};
+    ggml_moe_cache_device_caps first_caps = {};
+    ggml_moe_cache_device_caps second_caps = {};
+    const bool queried = ggml_moe_cache.query_config(0, 8, &config) &&
+        ggml_moe_cache.query_device(first_device, &config, &first_caps) &&
+        ggml_moe_cache.query_device(second_device, &config, &second_caps);
+    const bool expect_parallel = queried && first_caps.compute_capability >= 800 &&
+        second_caps.compute_capability >= 800;
     ggml_moe_cache.session_destroy(session);
     ggml_backend_free(second_cuda);
-
-    const bool ok = shape_a_ready && shape_b_ready;
+    const bool fill_policy = capture.get().find(
+            expect_parallel ? "fills=parallel" : "fills=serial") != std::string::npos;
+    const bool ok = shape_a_ready && shape_b_ready && queried && fill_policy;
     printf("cache-route-override: %s\n", ok ? "OK" : "FAIL");
     return ok;
 }
@@ -2422,7 +2436,7 @@ int main() {
     ok &= run_exact_shape_inventory(cuda, cpu, capture);
     ok &= run_complete_pool_allocation(cuda, cpu);
     ok &= run_shared_budget(cuda, cpu, capture);
-    ok &= run_route_override(cuda_device, cuda, cpu);
+    ok &= run_route_override(cuda_device, cuda, cpu, capture);
     ok &= run_admission_policy(cuda, cpu, capture);
 
     free_graph(graph);
