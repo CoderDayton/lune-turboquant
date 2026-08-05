@@ -32,7 +32,7 @@ With default settings, a node must satisfy all of these conditions:
 - The graph node contains no more than the configured maximum token batch and no more than 64 routed rows. The default maximum is eight tokens in `auto` and one token in forced modes.
 - The selected device can hold a pool of at least 64 experts of that shape.
 
-Each physical device budget is coordinated across every target, draft, MTP, and server scheduler in the process. It is claimed once, at first eligible use. The automatic budget is:
+Each physical device budget is coordinated across every target, draft, MTP, and server scheduler in the process. It is claimed once, at first eligible use. Shape inventory counts the exact number of experts in every observed tensor; mixed expert counts do not reserve nonexistent slots. Device reservations are tracked per participating session, so releasing a high-reserve target immediately restores the correct capacity for the remaining sessions. The automatic budget is:
 
 ```
 min(configured budget, free VRAM - 3072 MiB reserve)
@@ -75,13 +75,13 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 ./build/bin/llama-server \
     -md /path/to/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf \
     --spec-type draft-dspark --spec-draft-n-max 5 \
     --fit on --moe-cache auto \
-    -t 48 -tb 48 -fa on -c 8192 -np 1 \
+    -t 24 -tb 48 -fa on -c 8192 -np 1 \
     -ctk q8_0 -ctv q8_0
 ```
 
-When no draft device is explicit, the server places the DSpark sidecar on the secondary GPU with the most available memory, keeps its one-layer split there, and measures the draft against the no-allocation target before fitting. An explicit `--spec-draft-device` remains authoritative.
+When no draft device is explicit, the server places the DSpark sidecar on the eligible GPU with the most available memory, excluding an explicit target primary device when possible. The draft device is moved to the front of its own device list and receives its one-layer split while the remaining target backends stay available. The server measures this exact draft placement against the no-allocation target before fitting. An explicit `--spec-draft-device` remains authoritative.
 
-On the measured 4x RTX 3090 system, automatic target-only decode reached about 27.5 t/s. A warmed short DSpark request reached 41.0 t/s, and a coherent 621-token response completed at 30.6 t/s with 426 of 975 draft tokens accepted. These are workload-specific measurements. Retain the 3072 MiB reserve or remeasure when increasing context, slots, or other CUDA allocations.
+On the measured 4x RTX 3090 system, the final target-only automatic policy reached `27.91 +/- 0.06` t/s versus `23.20 +/- 0.05` t/s with the cache off, a 20.3% end-to-end gain on the rebased implementation. Warm cache statistics were about 91-92% hits across the four devices with no fill, dispatch, or collect failures. A deterministic sequence with 100% draft acceptance reached 66.64 t/s with DSpark `n_max=5`, versus 26.93 t/s target-only. The same workload reached 58.90 t/s at `n_max=3`; `n_max=7` produced no additional extraction and reached 66.18 t/s. A low-acceptance prose request remained coherent at about 27.7 t/s, illustrating that speculative gain depends on the workload rather than the cache hit rate alone. Retain the 3072 MiB reserve or remeasure when increasing context, slots, or other CUDA allocations.
 
 ### Measured DeepSeek V4 validation
 
@@ -96,7 +96,7 @@ The following canonical-weight scaling sweep used the Q8_K_XL target, CPU-reside
 
 Putting all dense weights on the first GPU remained faster than an equal four-device tensor split. A later fixed-budget sweep with that topology reached 23.91, 25.53, 26.45, 26.92, and 27.01 t/s at 4, 8, 12, 16, and 20 GiB per device respectively. The small change above 16 GiB shows that automatic capacity is already near the useful ceiling on this model. Disabling serialized fills did not improve steady decode, so serialized fills remain the default.
 
-Quality checks used the actual target GGUF, not only synthetic tensors. Perplexity over four 512-token chunks was `2.7996 +/- 0.19833` with the cache off and `2.7987 +/- 0.19824` with it on. A 39,638-token retrieval prompt returned all three exact codes placed near the beginning, middle, and end, and a same-session follow-up reused 39,671 tokens and remained coherent. These results show statistical quality equivalence on the tested workload, not bit-identical execution.
+Quality checks used the actual target GGUF, not only synthetic tensors. Perplexity over four 512-token chunks was `2.7996 +/- 0.19833` with the cache off and `2.7987 +/- 0.19824` with it on. On the final accounting code, a 54,044-token retrieval prompt returned all three exact codes placed near the beginning, middle, and end. A same-session follow-up evaluated only 18 new prompt tokens, returned the correct middle code, and remained coherent. These results show statistical quality equivalence on the tested workload, not bit-identical execution.
 
 Measure this model with three separate `llama-bench` arms and otherwise identical placement, context, batch, thread, and warmup settings:
 
@@ -110,7 +110,7 @@ Comparing arm 1 with arm 3 measures the end-to-end configuration benefit; compar
 
 ## GLM-5.2 validation and production profile
 
-The GLM-5.2 UD-IQ2_M tests used four RTX 3090 GPUs and the same 48-core host. In the current automatic placement, a matched canonical-weight `llama-bench` arm improved from about 14.6 t/s with the cache off to 19.3 t/s with it on, or about 33%. The cache needs a longer warmup than DeepSeek because the routed expert set is about 209 GiB; short runs can continue accelerating while fills complete.
+The GLM-5.2 UD-IQ2_M tests used four RTX 3090 GPUs and the same 48-core host. On the final rebased implementation, the complete automatic policy improved from `14.49 +/- 0.04` t/s with the cache off to `19.45 +/- 0.23` t/s in auto, or 34.2%. The off arm preserved repacking; auto selected canonical experts plus about 62,981 MiB of projected cache capacity in the active arm. The cache needs a longer warmup than DeepSeek because the routed expert set is about 209 GiB; short runs can continue accelerating while fills complete.
 
 The model contains one embedded next-token prediction layer. It works with the cache, but the best measured settings were `--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.5`, which reached 20.62 t/s on that workload, 18.6% above the target-only server. Increasing the draft maximum to five reduced throughput to about 15.9 t/s because acceptance fell while draft work increased.
 
@@ -131,7 +131,7 @@ GGML_CUDA_MOE_CACHE_RESERVE_MB=3072 \
     -t 44 -tb 48 -fa on --load-mode mmap --cache-ram 0
 ```
 
-At context 65,536, a 2048-token ubatch required about 3952 MiB for the prompt graph and failed to fit; 512 was stable. The first GPU held the dense weights and context and had about 1.5 GiB free, so its cache stayed dormant under the 3 GiB reserve. The other two GPUs supplied the expert cache. Repeated coherent 256-token generations converged to 14.78 and 15.14 t/s, close to the earlier 15.65 t/s matched production measurement, while physical GPU 3 remained at 1 MiB.
+At context 65,536, a 2048-token ubatch required about 3952 MiB for the prompt graph and failed to fit; 512 was stable. The first GPU held the dense weights and context and had about 1.5 GiB free, so its cache stayed dormant under the 3 GiB reserve. The other two GPUs supplied the expert cache. On the final binary, two coherent generations reached 15.54 and 16.46 t/s while physical GPU 3 remained at 1 MiB. After lazy pool growth, GPUs 1 and 2 used about 21 GiB each.
 
 `--load-mode none` was also tested against mmap with the exact 65k server profile. No-mmap took 4:31 to become ready instead of 3:03, left only about 28 GiB host memory available, increased swap use, and averaged 14.88 t/s over two steady samples versus 14.96 t/s for mmap. Mmap therefore remains the tested default for this profile.
 
@@ -151,9 +151,13 @@ These matched canonical-weight decode checks force routed experts to CPU memory.
 
 The Qwen3.6 experts are below the default 1 MiB admission threshold, so the cache remained effectively dormant and the result is parity rather than an active-cache regression. Llama-4 used 512 warmup and generation tokens; its cache result was 45.03 +/- 0.24 t/s after the shorter warmup showed fill variance. This matrix is evidence for the tested hardware, not a guarantee that every eligible GPU and model will improve.
 
+The real OLMoE model also exercised every available quant family from Q2_K through Q8_0 with forced 64 KiB admission. Q2_K, Q3_K_S/M/L, Q4_0, Q4_K_S/M, Q5_0, Q5_K_S/M, Q6_K, and Q8_0 all engaged the cache with no fill, dispatch, or collect failures. F16 remained dormant because that cache matvec type is unsupported. A fully resident Qwen3.6-35B control preserved repacking and remained dormant at 146.74 t/s off versus 146.65 t/s auto.
+
 ## Concurrency, fallback, and lifetime
 
 The scheduler binds its cache session only while it computes a graph. Within one session, per-device scratch buffers and dispatch are serialized. If another cached node in that session already owns a device, the contending node takes the regular CPU path. Separate schedulers own separate sessions, pools, streams, and dispatch locks even when they select the same physical device.
+
+A two-slot DeepSeek server test generated unrelated Saturn and photosynthesis answers concurrently. Both responses were complete, coherent, and isolated, with no deadlock, row leakage, or cache failure. This complements the model-free concurrent-node and nested-session tests.
 
 Valid slots are pinned for the lifetime of a node. Miss rows remain in the normal CPU work set. Hit rows are removed from that set only after the complete GPU dispatch has been accepted.
 
@@ -184,6 +188,7 @@ The following environment variables are implementation controls, not a stable co
 | `GGML_CUDA_MOE_CACHE_STATS` | `0` | Collection-call interval for periodic statistics, or `0` for teardown only |
 | `GGML_CUDA_MOE_CACHE_NDEV` | all | Maximum selected CUDA devices used by a session |
 | `GGML_CUDA_MOE_CACHE_SERIAL_FILL` | `1` | Serialize fills across devices in a session |
+| `GGML_CUDA_MOE_CACHE_DEDICATED_MMV` | `1` | Use the cache-specific matvec activation map; `0` enables the compatible modulo-index fallback for comparison |
 | `GGML_CUDA_MOE_CACHE_OVERLAP_CPU_ROWS` | mode dependent | Rows retained on CPU only when every row is resident; `1` in auto and `0` when forced |
 | `GGML_CUDA_MOE_CACHE_MIN_CC` | mode dependent | Override the minimum compute capability encoded as `major * 100 + minor * 10` |
 
