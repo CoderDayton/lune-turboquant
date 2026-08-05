@@ -9,6 +9,8 @@
 
 struct common_moe_cache_params;
 
+const char * common_moe_cache_tensor_override_pattern();
+
 struct common_moe_cache_fit_device_input {
     int physical_device = -1;
     int compute_capability = 0;

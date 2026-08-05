@@ -1354,10 +1354,43 @@ private:
                 try {
                     auto mparams_tgt = common_model_params_to_llama(params_base);
                     auto cparams_tgt = common_context_params_to_llama(params_base);
-                    auto dmd = common_get_device_memory_data_with_parent(
-                        params_dft.model.path.c_str(), &mparams_dft, &cparams_dft,
-                        params_base.model.path.c_str(), &mparams_tgt, &cparams_tgt,
-                        devs, hp_ngl, hp_nct, hp_nex, GGML_LOG_LEVEL_ERROR);
+                    const char * path_dft = spec_mtp ? params_base.model.path.c_str() : params_dft.model.path.c_str();
+                    auto measure_spec_memory = [&](const llama_model_params & mparams_measure,
+                                                   const llama_model_params & mparams_parent,
+                                                   std::vector<ggml_backend_dev_t> & measured_devs,
+                                                   uint32_t & measured_ngl,
+                                                   uint32_t & measured_nct,
+                                                   uint32_t & measured_nex) {
+                        auto data = common_get_device_memory_data_with_parent(
+                            path_dft, &mparams_measure, &cparams_dft,
+                            params_base.model.path.c_str(), &mparams_parent, &cparams_tgt,
+                            measured_devs, measured_ngl, measured_nct, measured_nex, GGML_LOG_LEVEL_ERROR);
+                        if (!spec_mtp) {
+                            return data;
+                        }
+
+                        std::vector<ggml_backend_dev_t> target_devs;
+                        uint32_t target_ngl = 0;
+                        uint32_t target_nct = 0;
+                        uint32_t target_nex = 0;
+                        const auto target = common_get_device_memory_data(
+                            params_base.model.path.c_str(), &mparams_parent, &cparams_tgt,
+                            target_devs, target_ngl, target_nct, target_nex, GGML_LOG_LEVEL_ERROR);
+                        if (target_devs != measured_devs || target.size() != data.size()) {
+                            throw std::runtime_error("MTP and target memory devices differ");
+                        }
+                        for (size_t i = 0; i < data.size(); i++) {
+                            if (target[i].compute > SIZE_MAX - data[i].compute) {
+                                throw std::runtime_error("MTP memory estimate overflowed");
+                            }
+                            data[i].compute += target[i].compute;
+                        }
+                        return data;
+                    };
+
+                    const llama_model_params & mparams_measure = spec_mtp ? mparams_tgt : mparams_dft;
+                    auto dmd = measure_spec_memory(
+                        mparams_measure, mparams_tgt, devs, hp_ngl, hp_nct, hp_nex);
 
                     std::vector<std::pair<ggml_backend_dev_t, size_t>> reservations;
                     auto add_reservations = [&](const common_device_memory_data_vec & data,
@@ -1378,19 +1411,26 @@ private:
                     };
                     add_reservations(dmd, devs);
 
-                    if (shared_draft_devices.prepared && mparams_tgt.split_mode != LLAMA_SPLIT_MODE_NONE &&
+                    if ((shared_draft_devices.prepared || spec_mtp) && mparams_tgt.split_mode != LLAMA_SPLIT_MODE_NONE &&
                         mparams_tgt.main_gpu >= 0) {
                         try {
                             llama_model_params mparams_tgt_main = mparams_tgt;
                             mparams_tgt_main.split_mode = LLAMA_SPLIT_MODE_NONE;
+                            llama_model_tensor_buft_override mtp_overrides[2] = {};
+                            if (spec_mtp) {
+                                mtp_overrides[0] = {
+                                    common_moe_cache_tensor_override_pattern(), ggml_backend_cpu_buffer_type() };
+                                mparams_tgt_main.tensor_buft_overrides = mtp_overrides;
+                                mparams_tgt_main.use_extra_bufts = false;
+                            }
+                            const llama_model_params & mparams_measure_main = spec_mtp ? mparams_tgt_main : mparams_dft;
                             std::vector<ggml_backend_dev_t> devs_main;
                             uint32_t hp_ngl_main = 0;
                             uint32_t hp_nct_main = 0;
                             uint32_t hp_nex_main = 0;
-                            const auto dmd_main = common_get_device_memory_data_with_parent(
-                                params_dft.model.path.c_str(), &mparams_dft, &cparams_dft,
-                                params_base.model.path.c_str(), &mparams_tgt_main, &cparams_tgt,
-                                devs_main, hp_ngl_main, hp_nct_main, hp_nex_main, GGML_LOG_LEVEL_ERROR);
+                            const auto dmd_main = measure_spec_memory(
+                                mparams_measure_main, mparams_tgt_main,
+                                devs_main, hp_ngl_main, hp_nct_main, hp_nex_main);
                             add_reservations(dmd_main, devs_main);
                         } catch (const std::exception & e) {
                             SRV_DBG("[spec] failed to measure main-device shared-tensor memory: %s\n", e.what());
