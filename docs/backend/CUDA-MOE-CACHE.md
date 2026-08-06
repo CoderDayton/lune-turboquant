@@ -1,6 +1,6 @@
 # CUDA MoE expert cache
 
-The CUDA MoE expert cache accelerates decode when routed expert weights remain in host memory. A cache hit runs the selected expert matvec on CUDA while the CPU computes the miss rows through the normal `MUL_MAT_ID` kernel. The cache belongs to one backend scheduler and persists until that scheduler is destroyed.
+The CUDA MoE expert cache accelerates decode when routed expert weights remain in host memory. A cache hit runs the selected expert matvec on CUDA while the CPU computes the miss rows through the normal `MUL_MAT_ID` kernel. Exact gate/up/SwiGLU subgraphs can fuse rows resident in both weight tensors while half-resident and missing rows stay on the stock CPU path. The cache belongs to one backend scheduler and persists until that scheduler is destroyed.
 
 This is an opportunistic path. Unsupported nodes, unavailable cache capacity, contention, and cache failures fall back to CPU execution.
 
@@ -25,7 +25,7 @@ The cache considers only CUDA backends selected for the scheduler. It does not d
 
 With default settings, a node must satisfy all of these conditions:
 
-- The operation is the regular CPU `MUL_MAT_ID` path with F32 activations.
+- The operation is the regular CPU `MUL_MAT_ID` path with F32 activations, optionally in an exact supported gate/up/SwiGLU subgraph.
 - The weight tensor name contains `_exps`.
 - The weight type is supported by the CUDA quantized matvec kernel.
 - One expert meets the selected devices' effective size floor. The default is 64 KiB when every selected device is compute capability 8.0 or newer and 1 MiB otherwise. An explicit threshold remains authoritative.
@@ -42,7 +42,7 @@ The configured-budget term is omitted for `auto` and `on`. A fixed `N` is a cap 
 
 Tensor shapes are collected before pools are allocated. Allocation waits for a repeated shape census and 64 stable visits so early graph discovery does not give all capacity to the first tensor shape. Capacity is divided among discovered shapes. A layer is assigned once to a selected device and keeps that assignment while the device remains usable. If that device cannot host a different tensor shape from the layer, the tensor receives its own stable assignment. Initial assignments are deterministic and weighted by usable slab capacity after existing pools and dispatch scratch are accounted for.
 
-When every routed row is resident, the cache keeps a bounded amount of work on the CPU while CUDA computes the other rows. The automatic amount accounts for expert size, token count, and routing width, and never exceeds one quarter of the node. This preserves useful CPU/GPU overlap without giving a small expert the same CPU work as a large one. Nodes with an actual miss are unchanged.
+When every routed row is resident, the cache keeps a bounded amount of work on the CPU while CUDA computes the other rows. The automatic work budget is 8 MiB of expert weights per token, then capped by token count, routing width, and one quarter of the node. Four-GPU sweeps found the automatic result at or within 0.6% of the best tested fixed row count on Qwen3-30B, DeepSeek V4 target-only and DSpark, and GLM-5.2 MTP. Nodes with an actual miss are unchanged.
 
 The `[moe-cache] enabled` message is printed only after the first pool is allocated. If it is absent, the cache did not become active.
 
@@ -81,7 +81,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 ./build/bin/llama-server \
 
 When no draft device is explicit, the server places the DSpark sidecar on the eligible GPU with the most available memory, excluding the target main device when possible. The draft device is moved to the front of its own device list and receives its one-layer split while the remaining target backends stay available. The server measures this draft placement against both the packed and main-device no-allocation target placements, then reserves the per-device maximum before fitting. An explicit `--spec-draft-device` remains authoritative for draft weights, but target backends are appended when needed because DFlash and DSpark share the target embedding and output tensors. `--spec-draft-device none` keeps the sidecar weights on CPU while retaining those target backends for the shared operations. Sleep/wake reload starts from the original placement request and repeats measurement and fitting instead of accumulating old reservations.
 
-On the measured 4x RTX 3090 system, the final target-only automatic policy reached `27.91 +/- 0.06` t/s versus `23.20 +/- 0.05` t/s with the cache off, a 20.3% end-to-end gain on the rebased implementation. Warm cache statistics were about 91-92% hits across the four devices with no fill, dispatch, or collect failures. In a later matched DSpark run, all six cache-on and all six cache-off requests produced the exact expected sequence. The five settled cache-on samples averaged 65.86 t/s, compared with 51.63 t/s cache-off, for a 27.6% gain. The last three cache-on samples averaged 66.29 t/s with 213 of 215 draft tokens accepted in each request. Auto-fit reserved the sidecar placement before assigning about 53.6 GiB of target cache capacity. Explicit GPU, CPU-only draft, and sleep/wake reload paths also produced correct output. A low-acceptance prose request remained coherent at about 27.7 t/s, illustrating that speculative gain depends on the workload rather than the cache hit rate alone. Retain the 3072 MiB reserve or remeasure when increasing context, slots, or other CUDA allocations.
+On the measured 4x RTX 3090 system, the current target-only fused path reached `28.24 +/- 0.05` t/s. Disabling fusion in the same source reduced it to `27.64 +/- 0.02` t/s, a 2.18% isolated gain; an earlier cache-off control was `23.20 +/- 0.05` t/s. With the DSpark sidecar, the five settled samples averaged 69.39 t/s and every request produced the exact expected sequence with 213 of 215 draft tokens accepted. The preceding single-token-fusion branch averaged 65.86 t/s under the same request, so allowing the existing cache path to fuse six-token verification nodes added 5.37%. The earlier cache-off control was 51.63 t/s. Auto-fit reserved the sidecar placement before assigning about 53.6 GiB of target cache capacity. Explicit GPU, CPU-only draft, and sleep/wake reload paths also produced correct output. A low-acceptance prose request remained coherent at about 27.7 t/s, illustrating that speculative gain depends on the workload rather than the cache hit rate alone. Retain the 3072 MiB reserve or remeasure when increasing context, slots, or other CUDA allocations.
 
 ### Measured DeepSeek V4 validation
 
@@ -110,7 +110,7 @@ Comparing arm 1 with arm 3 measures the end-to-end configuration benefit; compar
 
 ## GLM-5.2 validation and production profile
 
-The GLM-5.2 UD-IQ2_M tests used four RTX 3090 GPUs and the same 48-core host. The routed expert set is about 209 GiB, so this model needs a long warmup before its cache reaches steady state. With embedded MTP, six matched cache-on requests produced the exact expected sequence and the settled samples reached about 28.0 t/s. Six cache-off requests produced the same exact sequence at 14.46 t/s, making the complete cache-aware configuration about 94% faster. This is an end-to-end placement result: the off arm preserved stock placement while auto selected canonical CPU experts and retained VRAM for cache pools.
+The GLM-5.2 UD-IQ2_M tests used four RTX 3090 GPUs and the same 48-core host. The routed expert set is about 209 GiB, so this model needs a long warmup before its cache reaches steady state. Extending the same fused path from single-token nodes to MTP verification batches improved six exact-output requests from 27.38 to 29.56 t/s, or 7.96%, with statistically similar draft acceptance. An earlier cache-off configuration produced the same exact sequence at 14.46 t/s. That wider comparison is an end-to-end placement result: the off arm preserved stock placement while auto selected canonical CPU experts and retained VRAM for cache pools.
 
 The model contains one embedded next-token prediction layer. The best measured settings remain `--spec-type draft-mtp --spec-draft-n-max 3 --spec-draft-p-min 0.5`. Increasing the draft maximum to five reduced throughput because acceptance fell while draft work increased.
 
@@ -150,10 +150,10 @@ These matched canonical-weight decode checks force routed experts to CPU memory.
 | Qwen3-30B-A3B Q4_K_XL | 71.93 t/s | 73.43 t/s | +2.1% |
 | Qwen3.6-35B-A3B Q4_K_XL | 77.60 t/s | 84.04 t/s | +8.3% |
 | DeepSeek-V2-Lite Q4_K_M | 65.04 t/s | 81.61 t/s | +25.5% |
-| Llama-4 Scout Q4_K_XL | 25.88 t/s | 45.03 t/s | +74.0% |
+| Llama-4 Scout Q4_K_XL | 25.88 t/s | 45.03 t/s historical | +74.0% historical |
 | MiniMax M2.7 IQ2_XXS | 37.76 t/s | 47.81 t/s | +26.6% |
 
-The updated hardware-aware threshold made the Qwen3.6 experts eligible on four RTX 3090 devices. Its row uses 512 warmup and 512 measured generation tokens with canonical CPU experts in both arms. A fixed 4096 MiB cache reached 83.89 t/s in the same run. Llama-4 used 512 warmup and generation tokens; its cache result was 45.03 +/- 0.24 t/s after the shorter warmup showed fill variance. This matrix is evidence for the tested hardware, not a guarantee that every eligible GPU and model will improve.
+The updated hardware-aware threshold made the Qwen3.6 experts eligible on four RTX 3090 devices. Its row uses 512 warmup and 512 measured generation tokens with canonical CPU experts in both arms. A fixed 4096 MiB cache reached 83.89 t/s in the same run. The Llama-4 result predates the current per-tensor 64-expert eligibility check. The real model has 16 experts per tensor, and the current fixed-cache control remained dormant at `25.927 +/- 0.028` t/s even though its shared shape has enough aggregate entries for a pool. That eligibility regression is tracked separately; do not treat 45.03 t/s as a current-branch result until it is rerun. This matrix is evidence for the tested hardware, not a guarantee that every eligible GPU and model will improve.
 
 The real OLMoE model also exercised the available quant families from Q2_K through Q8_0 with the automatic 64 KiB admission floor. The matched off versus fixed 4096 MiB results were 251.54 versus 263.34 t/s for Q2_K, 215.12 versus 257.65 t/s for Q3_K_M, 200.12 versus 265.97 t/s for Q4_0, 173.49 versus 256.55 t/s for Q5_K_M, 157.75 versus 236.78 t/s for Q6_K, and 130.60 versus 224.03 t/s for Q8_0. F16 remained dormant because that cache matvec type is unsupported and preserved parity at 74.43 versus 74.78 t/s. A fully resident Qwen3.6-35B control preserved repacking and remained dormant at 144.80 t/s off versus 144.68 t/s auto.
 
@@ -177,7 +177,7 @@ The normal CUDA allocator may trim an active expert cache as a last attempt to s
 
 ## Diagnostics and developer controls
 
-The pool log reports the physical CUDA device, weight type, expert size, slot count, and allocated bytes. Session teardown reports hits, misses, queue activity, fills, evictions, CPU-overlap rows, activation deduplication, and fallback counters for devices that processed cache nodes. Set `GGML_CUDA_MOE_CACHE_STATS=N` to print the same counters every `N` collection calls.
+The pool log reports the physical CUDA device, weight type, expert size, slot count, and allocated bytes. Session teardown reports hits, misses, queue activity, fills, evictions, CPU-overlap rows, activation deduplication, and fallback counters for devices that processed cache nodes. `hits` and its denominator count tensor-expert residency probes. On a fused gate/up candidate, a half-resident pair therefore records one hit and one miss even though that row stays on the CPU. `fusion=A/B` separately reports the rows actually dispatched through the fused CUDA path over the candidate rows in successfully dispatched fused nodes. Set `GGML_CUDA_MOE_CACHE_STATS=N` to print the same counters every `N` collection calls.
 
 The following environment variables are implementation controls, not a stable command-line interface. They are read when a scheduler creates its cache session.
 
@@ -243,7 +243,7 @@ An `off` versus `on` comparison without `--repack off` includes the intended rep
 ## Current limitations
 
 - CUDA only. HIP, MUSA, Metal, Vulkan, and other backends do not register an implementation.
-- CPU-resident expert `MUL_MAT_ID` only. There is no fused gate/up/activation path and no GPU-resident output handoff.
+- CPU-resident expert `MUL_MAT_ID` only. Exact gate/up/SwiGLU graphs, including DeepSeek's per-input clamps, can fuse for up to the configured token batch and 64 flattened routed rows. Other GLU graphs use the stock path. There is no GPU-resident output handoff.
 - Demand fill only. There is no predictive prefetch or separate prompt-time population path.
 - No hot-set file or persistence across scheduler sessions or process restarts.
 - Direct writes through a raw host pointer bypass invalidation. Mutate cached weight buffers through the backend tensor and buffer APIs.

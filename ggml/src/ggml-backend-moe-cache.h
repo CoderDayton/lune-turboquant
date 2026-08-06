@@ -36,6 +36,16 @@ struct ggml_moe_cache_shape_caps {
     size_t minimum_bytes;
 };
 
+struct ggml_moe_cache_tensor_desc {
+    const char * name;
+    const void * data;
+    size_t expert_size;
+    int64_t n_in;
+    int64_t n_out;
+    int64_t n_expert;
+    int32_t type;
+};
+
 enum ggml_moe_cache_mode {
     GGML_MOE_CACHE_MODE_UNSPECIFIED = -1,
     GGML_MOE_CACHE_MODE_OFF = 0,
@@ -74,6 +84,14 @@ struct ggml_moe_cache_api {
 
     // Releases slot pins and all per-node ownership. Must be called exactly once for every non-NULL begin result, on every success or failure path.
     void (*end)(void * node);
+
+    // Dispatch one fused up * GLU(gate) operation over experts resident for both tensors. This is used only after the CPU backend proves that the two MUL_MAT_ID nodes and GLU form an elidable subgraph. ids and act_rows contain n_rows flattened token-major routed rows. Returns a regular node accepted by collect/end and marks the skipped logical rows in hit_mask.
+    void * (*fused_begin)(const struct ggml_moe_cache_tensor_desc * up,
+                          const struct ggml_moe_cache_tensor_desc * gate,
+                          int glu_op, float up_min, float up_max,
+                          float gate_min, float gate_max,
+                          const int32_t * ids, int n_rows, int64_t n_tokens,
+                          const float * const * act_rows, uint64_t * hit_mask);
 
     // Host buffer mutation or teardown notification. Sessions cancel or finish any fill that still reads the supplied range before this call returns.
     void (*invalidate)(const void * base, size_t size);

@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -504,6 +505,74 @@ static test_graph make_graph(
     return result;
 }
 
+static test_graph make_fused_graph(
+        ggml_backend_t cpu,
+        ggml_tensor * up_weights,
+        ggml_tensor * gate_weights,
+        ggml_tensor * activations,
+        ggml_tensor * ids) {
+    ggml_init_params params = {
+        12 * ggml_tensor_overhead() + ggml_graph_overhead(),
+        nullptr,
+        true,
+    };
+    test_graph result;
+    result.ctx = ggml_init(params);
+    if (!result.ctx) {
+        return result;
+    }
+    ggml_tensor * up = ggml_mul_mat_id(
+            result.ctx, up_weights, activations, ids);
+    ggml_tensor * gate = ggml_mul_mat_id(
+            result.ctx, gate_weights, activations, ids);
+    result.out = ggml_swiglu_split(result.ctx, gate, up);
+    ggml_set_name(up, "moe_cache_fused_up");
+    ggml_set_name(gate, "moe_cache_fused_gate");
+    ggml_set_name(result.out, "moe_cache_fused_out");
+    result.graph = ggml_new_graph(result.ctx);
+    ggml_build_forward_expand(result.graph, result.out);
+    result.buffer = ggml_backend_alloc_ctx_tensors(result.ctx, cpu);
+    return result;
+}
+
+static test_graph make_clamped_fused_graph(
+        ggml_backend_t cpu,
+        ggml_tensor * up_weights,
+        ggml_tensor * gate_weights,
+        ggml_tensor * activations,
+        ggml_tensor * ids) {
+    ggml_init_params params = {
+        16 * ggml_tensor_overhead() + ggml_graph_overhead(),
+        nullptr,
+        true,
+    };
+    test_graph result;
+    result.ctx = ggml_init(params);
+    if (!result.ctx) {
+        return result;
+    }
+    ggml_tensor * up = ggml_mul_mat_id(
+            result.ctx, up_weights, activations, ids);
+    ggml_tensor * gate = ggml_mul_mat_id(
+            result.ctx, gate_weights, activations, ids);
+    ggml_tensor * up_clamped =
+        ggml_clamp(result.ctx, up, -0.25f, 0.25f);
+    ggml_tensor * gate_clamped = ggml_clamp(
+            result.ctx, gate,
+            -std::numeric_limits<float>::infinity(), 0.20f);
+    result.out = ggml_swiglu_split(
+            result.ctx, gate_clamped, up_clamped);
+    ggml_set_name(up, "moe_cache_clamped_up");
+    ggml_set_name(gate, "moe_cache_clamped_gate");
+    ggml_set_name(up_clamped, "moe_cache_clamped_up_limit");
+    ggml_set_name(gate_clamped, "moe_cache_clamped_gate_limit");
+    ggml_set_name(result.out, "moe_cache_clamped_out");
+    result.graph = ggml_new_graph(result.ctx);
+    ggml_build_forward_expand(result.graph, result.out);
+    result.buffer = ggml_backend_alloc_ctx_tensors(result.ctx, cpu);
+    return result;
+}
+
 static void free_graph(test_graph & graph) {
     if (graph.buffer) {
         ggml_backend_buffer_free(graph.buffer);
@@ -587,6 +656,9 @@ static bool run_scenario(
     } else if (strcmp(fail_stage, "slab") == 0) {
         stage_ok = log.find("allocation failed") != std::string::npos;
     }
+    if (required_field) {
+        stage_ok &= has_positive_field(log, required_field);
+    }
     if (!stage_ok) {
         fprintf(stderr, "%s: cache stage was not observed\n%s", name, log.c_str());
     }
@@ -598,6 +670,7 @@ static bool run_multi_token_scenario(
         ggml_backend_t cuda,
         ggml_backend_t cpu,
         ggml_tensor * weights,
+        ggml_tensor * gate_weights,
         log_capture & capture) {
     const ggml_init_params params = {
         4 * ggml_tensor_overhead(),
@@ -646,27 +719,55 @@ static bool run_multi_token_scenario(
             activation_data.size() * sizeof(float));
 
     test_graph graph = make_graph(cpu, weights, activations, ids);
-    bool ok = graph.ctx && graph.buffer;
-    std::vector<float> reference;
+    test_graph fused_graph = make_fused_graph(
+            cpu, weights, gate_weights, activations, ids);
+    test_graph clamped_fused_graph = make_clamped_fused_graph(
+            cpu, weights, gate_weights, activations, ids);
+    bool ok = graph.ctx && graph.buffer &&
+        fused_graph.ctx && fused_graph.buffer &&
+        clamped_fused_graph.ctx && clamped_fused_graph.buffer;
     if (!ok) {
-        fprintf(stderr, "cache-multi-token: failed to create graph\n");
+        fprintf(stderr, "cache-multi-token: failed to create graphs\n");
     } else {
         set_env("GGML_CUDA_MOE_CACHE", "0");
-        ok = ggml_backend_graph_compute(cpu, graph.graph) ==
-            GGML_STATUS_SUCCESS;
-        if (!ok) {
-            fprintf(stderr, "cache-multi-token: CPU reference compute failed\n");
-        } else {
-            reference.resize(ggml_nelements(graph.out));
+        auto make_reference = [&](const char * name, test_graph & test,
+                                  std::vector<float> & reference) {
+            if (ggml_backend_graph_compute(cpu, test.graph) !=
+                    GGML_STATUS_SUCCESS) {
+                fprintf(stderr, "%s: CPU reference compute failed\n", name);
+                return false;
+            }
+            reference.resize(ggml_nelements(test.out));
             ggml_backend_tensor_get(
-                    graph.out, reference.data(), 0,
+                    test.out, reference.data(), 0,
                     reference.size() * sizeof(float));
-            ok = run_scenario(
-                    "cache-multi-token", nullptr, cuda, cpu,
-                    graph, reference, capture, "8", "act-dedup=");
-        }
+            return true;
+        };
+        std::vector<float> reference;
+        std::vector<float> fused_reference;
+        std::vector<float> clamped_fused_reference;
+        ok = make_reference("cache-multi-token", graph, reference) &&
+            make_reference(
+                    "cache-fused-multi-token", fused_graph,
+                    fused_reference) &&
+            make_reference(
+                    "cache-fused-clamped-multi-token",
+                    clamped_fused_graph, clamped_fused_reference);
+        ok = ok && run_scenario(
+                "cache-multi-token", nullptr, cuda, cpu,
+                graph, reference, capture, "8", "act-dedup=");
+        ok = ok && run_scenario(
+                "cache-fused-multi-token", nullptr, cuda, cpu,
+                fused_graph, fused_reference, capture,
+                "8", "fusion-nodes=");
+        ok = ok && run_scenario(
+                "cache-fused-clamped-multi-token", nullptr, cuda, cpu,
+                clamped_fused_graph, clamped_fused_reference, capture,
+                "8", "fusion-nodes=");
     }
 
+    free_graph(clamped_fused_graph);
+    free_graph(fused_graph);
     free_graph(graph);
     ggml_backend_buffer_free(buffer);
     ggml_free(ctx);
@@ -1314,6 +1415,156 @@ static bool run_concurrent_sessions(
     return output_ok.load() && cache_ok;
 }
 
+static bool run_fused_concurrent_sessions(
+        ggml_backend_dev_t cuda_device,
+        ggml_backend_t cuda,
+        ggml_backend_t cpu,
+        ggml_tensor * up_weights,
+        ggml_tensor * gate_weights,
+        ggml_tensor * activations,
+        ggml_tensor * ids,
+        test_graph & first_graph,
+        const std::vector<float> & reference,
+        log_capture & capture) {
+    configure_cache(nullptr);
+    set_env("GGML_CUDA_MOE_CACHE_BUDGET_MB", "16");
+    set_env("GGML_CUDA_MOE_CACHE_STATS", "0");
+    capture.clear();
+
+    ggml_backend_t cuda_second =
+        ggml_backend_dev_init(cuda_device, nullptr);
+    ggml_backend_t cpu_second = init_cpu_backend();
+    if (!cuda_second || !cpu_second) {
+        fprintf(stderr, "cache-fused-concurrent: failed to create second backends\n");
+        if (cuda_second) {
+            ggml_backend_free(cuda_second);
+        }
+        if (cpu_second) {
+            ggml_backend_free(cpu_second);
+        }
+        return false;
+    }
+
+    test_graph second_graph = make_fused_graph(
+            cpu_second, up_weights, gate_weights, activations, ids);
+    if (!second_graph.ctx || !second_graph.buffer) {
+        fprintf(stderr, "cache-fused-concurrent: failed to create second graph\n");
+        free_graph(second_graph);
+        ggml_backend_free(cuda_second);
+        ggml_backend_free(cpu_second);
+        return false;
+    }
+
+    ggml_backend_sched_t first = make_scheduler(
+            "cache-fused-concurrent-1", cuda, cpu, first_graph);
+    ggml_backend_sched_t second = make_scheduler(
+            "cache-fused-concurrent-2", cuda_second, cpu_second,
+            second_graph);
+    if (!first || !second) {
+        if (first) {
+            ggml_backend_sched_free(first);
+        }
+        if (second) {
+            ggml_backend_sched_free(second);
+        }
+        free_graph(second_graph);
+        ggml_backend_free(cuda_second);
+        ggml_backend_free(cpu_second);
+        return false;
+    }
+
+    std::atomic<int> ready{0};
+    std::atomic<bool> start{false};
+    std::atomic<bool> output_ok{true};
+    auto run = [&](const char * name, ggml_backend_sched_t scheduler,
+                   test_graph & graph) {
+        ready.fetch_add(1);
+        while (!start.load()) {
+            std::this_thread::yield();
+        }
+        for (int step = 0; step < max_steps && output_ok.load(); step++) {
+            if (!compute_matches(name, scheduler, graph, reference, step)) {
+                output_ok.store(false);
+                break;
+            }
+            if (step >= 64) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+    };
+
+    std::thread first_thread(
+            run, "cache-fused-concurrent-1", first,
+            std::ref(first_graph));
+    std::thread second_thread(
+            run, "cache-fused-concurrent-2", second,
+            std::ref(second_graph));
+    while (ready.load() != 2) {
+        std::this_thread::yield();
+    }
+    start.store(true);
+    first_thread.join();
+    second_thread.join();
+
+    ggml_backend_sched_free(first);
+    ggml_backend_sched_free(second);
+    const std::string log = capture.get();
+    const bool cache_ok =
+        count_field_at_least(log, "fusion-nodes=", 1) >= 2 &&
+        max_field_value(log, "dispatch-fail=") == 0 &&
+        max_field_value(log, "collect-fail=") == 0;
+    if (!cache_ok) {
+        fprintf(stderr,
+                "cache-fused-concurrent: fusion was not observed in both sessions\n%s",
+                log.c_str());
+    }
+
+    free_graph(second_graph);
+    ggml_backend_free(cuda_second);
+    ggml_backend_free(cpu_second);
+    configure_cache(nullptr);
+    printf("cache-fused-concurrent: %s\n",
+            output_ok.load() && cache_ok ? "OK" : "FAIL");
+    return output_ok.load() && cache_ok;
+}
+
+static bool run_fused_repeated_lifecycle(
+        ggml_backend_t cuda,
+        ggml_backend_t cpu,
+        test_graph & graph,
+        const std::vector<float> & reference,
+        log_capture & capture) {
+    configure_cache(nullptr);
+    constexpr int cycles = 8;
+    bool ok = true;
+    for (int cycle = 0; cycle < cycles && ok; cycle++) {
+        capture.clear();
+        ggml_backend_sched_t scheduler = make_scheduler(
+                "cache-fused-lifecycle", cuda, cpu, graph);
+        if (!scheduler) {
+            ok = false;
+            break;
+        }
+
+        bool fused = false;
+        for (int step = 0; step < max_steps && ok && !fused; step++) {
+            ok = compute_matches(
+                    "cache-fused-lifecycle", scheduler, graph,
+                    reference, step);
+            fused = has_positive_field(
+                    capture.get(), "fusion-nodes=");
+            if (step >= 64 && !fused) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        ok &= fused;
+        ggml_backend_sched_free(scheduler);
+    }
+
+    printf("cache-fused-lifecycle: %s\n", ok ? "OK" : "FAIL");
+    return ok;
+}
+
 static bool run_repeated_lifecycle(
         ggml_backend_t cuda,
         ggml_backend_t cpu,
@@ -1579,6 +1830,67 @@ static bool wait_for_direct_pool(
     return false;
 }
 
+static bool run_policy_diagnostics(
+        ggml_backend_t cuda, ggml_backend_t cpu,
+        ggml_tensor * weights, log_capture & capture) {
+    configure_cache(nullptr);
+    capture.clear();
+
+    void * session = create_direct_session(cuda, cpu);
+    if (!session) {
+        fprintf(stderr, "cache-policy-diagnostics: failed to create session\n");
+        return false;
+    }
+
+    const size_t expert_size = ggml_nbytes(weights) / weights->ne[2];
+    ggml_moe_cache.session_enter(session);
+    void * first = ggml_moe_cache.begin(
+            weights->name, weights->data, expert_size,
+            weights->ne[0], weights->ne[1], weights->type,
+            weights->ne[2], 1);
+    const bool census_waited = first == nullptr;
+    if (first) {
+        ggml_moe_cache.end(first);
+    }
+    void * second = ggml_moe_cache.begin(
+            weights->name, weights->data, expert_size,
+            weights->ne[0], weights->ne[1], weights->type,
+            weights->ne[2], 1);
+    const bool census_completed = second != nullptr;
+    if (second) {
+        ggml_moe_cache.end(second);
+    }
+    for (int64_t n_tokens : { 2, 3 }) {
+        void * oversize = ggml_moe_cache.begin(
+                weights->name, weights->data, expert_size,
+                weights->ne[0], weights->ne[1], weights->type,
+                weights->ne[2], n_tokens);
+        if (oversize) {
+            ggml_moe_cache.end(oversize);
+        }
+    }
+    ggml_moe_cache.session_leave(session);
+    ggml_moe_cache.session_destroy(session);
+
+    const std::string log = capture.get();
+    const bool configured =
+        log.find("configured: mode=on devices=1 budget=4 MiB cap") != std::string::npos &&
+        log.find("max-batch=1") != std::string::npos;
+    const bool capacity =
+        log.find("capacity: cap=4 MiB granted=4 MiB") != std::string::npos &&
+        log.find("free=") != std::string::npos &&
+        log.find("reserve=0 MiB") != std::string::npos;
+    const bool bypass = count_occurrences(log, "above max-batch=1") == 1;
+    const bool pool = count_occurrences(log, " pool[") == 1;
+    const bool ok = census_waited && census_completed && configured &&
+        capacity && bypass && pool;
+    if (!ok) {
+        fprintf(stderr, "cache-policy-diagnostics: expected diagnostics were not observed\n%s", log.c_str());
+    }
+    printf("cache-policy-diagnostics: %s\n", ok ? "OK" : "FAIL");
+    return ok;
+}
+
 static int direct_plan_one(
         const char * name, const void * base, size_t expert_size,
         int64_t direct_n_in, int64_t direct_n_out,
@@ -1612,6 +1924,185 @@ static int direct_plan_many(
             node, experts, n_experts, slots.data());
     ggml_moe_cache.end(node);
     return hits;
+}
+
+static bool wait_for_direct_resident(
+        ggml_tensor * weights, int32_t expert) {
+    const size_t expert_size = ggml_nbytes(weights) / weights->ne[2];
+    (void) direct_plan_one(
+            weights->name, weights->data, expert_size,
+            weights->ne[0], weights->ne[1], weights->type,
+            weights->ne[2], expert);
+    for (int attempt = 0; attempt < 200; attempt++) {
+        if (direct_plan_one(
+                weights->name, weights->data, expert_size,
+                weights->ne[0], weights->ne[1], weights->type,
+                weights->ne[2], expert) == 1) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return false;
+}
+
+static bool run_fused_partial_invalidation(
+        ggml_backend_t cuda,
+        ggml_backend_t cpu,
+        ggml_tensor * up_weights,
+        ggml_tensor * gate_weights,
+        ggml_tensor * activations,
+        const uint8_t * up_row,
+        const uint8_t * gate_row,
+        const std::vector<float> & reference,
+        log_capture & capture) {
+    if (!ggml_moe_cache.fused_begin || !ggml_moe_cache.collect ||
+        !ggml_moe_cache.end) {
+        fprintf(stderr, "cache-fused-partial: incomplete cache API\n");
+        return false;
+    }
+
+    configure_cache(nullptr);
+    capture.clear();
+    void * session = create_direct_session(cuda, cpu);
+    if (!session) {
+        fprintf(stderr, "cache-fused-partial: failed to create session\n");
+        return false;
+    }
+
+    const size_t expert_size =
+        ggml_nbytes(up_weights) / up_weights->ne[2];
+    const ggml_moe_cache_tensor_desc up = {
+        up_weights->name, up_weights->data, expert_size,
+        up_weights->ne[0], up_weights->ne[1], up_weights->ne[2],
+        (int32_t)up_weights->type,
+    };
+    const ggml_moe_cache_tensor_desc gate = {
+        gate_weights->name, gate_weights->data, expert_size,
+        gate_weights->ne[0], gate_weights->ne[1], gate_weights->ne[2],
+        (int32_t)gate_weights->type,
+    };
+    const float * act_rows[2] = {
+        (const float *)activations->data,
+        (const float *)activations->data,
+    };
+
+    ggml_moe_cache.session_enter(session);
+    bool pool_ready = false;
+    for (int step = 0; step < 80 && !pool_ready; step++) {
+        const bool up_ready = direct_begin_ready(
+                up_weights->name, up_weights->data, expert_size,
+                up_weights->ne[0], up_weights->ne[1], up_weights->type,
+                up_weights->ne[2]);
+        const bool gate_ready = direct_begin_ready(
+                gate_weights->name, gate_weights->data, expert_size,
+                gate_weights->ne[0], gate_weights->ne[1], gate_weights->type,
+                gate_weights->ne[2]);
+        pool_ready = up_ready && gate_ready;
+    }
+
+    bool partial_ok = pool_ready &&
+        wait_for_direct_resident(up_weights, 0) &&
+        wait_for_direct_resident(gate_weights, 0);
+
+    auto execute = [&](const int32_t * experts, int n_ids,
+                       uint64_t expected_mask,
+                       const int * reference_rows) {
+        uint64_t hit_mask = 0;
+        void * node = ggml_moe_cache.fused_begin(
+                &up, &gate, GGML_GLU_OP_SWIGLU,
+                -std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+                -std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+                experts, n_ids, 1, act_rows, &hit_mask);
+        if (!node || hit_mask != expected_mask) {
+            if (node) {
+                ggml_moe_cache.end(node);
+            }
+            return false;
+        }
+
+        int n_hits = 0;
+        float output[2 * n_out];
+        float * rows[2] = { nullptr, nullptr };
+        for (int row = 0; row < n_ids; row++) {
+            if (hit_mask & (UINT64_C(1) << row)) {
+                rows[n_hits] = output + n_hits * n_out;
+                n_hits++;
+            }
+        }
+        const bool collected =
+            ggml_moe_cache.collect(node, n_hits, rows, n_out) == 1;
+        ggml_moe_cache.end(node);
+        if (!collected) {
+            return false;
+        }
+
+        for (int hit = 0; hit < n_hits; hit++) {
+            const int reference_row = reference_rows[hit];
+            std::vector<float> expected(
+                    reference.begin() + reference_row * n_out,
+                    reference.begin() + (reference_row + 1) * n_out);
+            std::vector<float> actual(
+                    output + hit * n_out,
+                    output + (hit + 1) * n_out);
+            if (!compare_output(expected, actual, 5e-4)) {
+                return false;
+            }
+        }
+        return true;
+    };
+
+    const int32_t partial_ids[2] = { 0, 1 };
+    const int partial_reference[1] = { 0 };
+    partial_ok &= execute(
+            partial_ids, 2, UINT64_C(1), partial_reference);
+
+    const int32_t duplicate_ids[2] = { 0, 0 };
+    const int duplicate_reference[2] = { 0, 0 };
+    partial_ok &= execute(
+            duplicate_ids, 2, UINT64_C(3), duplicate_reference);
+
+    auto invalidated = [&](ggml_tensor * weights,
+                           const uint8_t * unchanged_row) {
+        ggml_backend_tensor_set(
+                weights, unchanged_row, 0, expert_size);
+        const int32_t expert = 0;
+        uint64_t hit_mask = 0;
+        void * node = ggml_moe_cache.fused_begin(
+                &up, &gate, GGML_GLU_OP_SWIGLU,
+                -std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+                -std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+                &expert, 1, 1, act_rows, &hit_mask);
+        if (node) {
+            ggml_moe_cache.end(node);
+            return false;
+        }
+        if (hit_mask != 0 || !wait_for_direct_resident(weights, expert)) {
+            return false;
+        }
+        const int reference_row[1] = { 0 };
+        return execute(&expert, 1, UINT64_C(1), reference_row);
+    };
+
+    const bool up_invalidation_ok = partial_ok &&
+        invalidated(up_weights, up_row);
+    const bool gate_invalidation_ok = up_invalidation_ok &&
+        invalidated(gate_weights, gate_row);
+    ggml_moe_cache.session_leave(session);
+    ggml_moe_cache.session_destroy(session);
+
+    const bool stats_ok = has_positive_field(
+            capture.get(), "fusion-nodes=");
+    printf("cache-fused-partial-duplicate: %s\n",
+            partial_ok ? "OK" : "FAIL");
+    printf("cache-fused-up-invalidate: %s\n",
+            up_invalidation_ok ? "OK" : "FAIL");
+    printf("cache-fused-gate-invalidate: %s\n",
+            gate_invalidation_ok && stats_ok ? "OK" : "FAIL");
+    return gate_invalidation_ok && stats_ok;
 }
 
 static bool run_cpu_overlap_policy(
@@ -1999,8 +2490,8 @@ static bool run_shared_budget(
     ggml_moe_cache.session_destroy(first);
 
     const std::string shared_log = capture.get();
-    const bool divided = count_field_at_least(shared_log, "claimed ", 8) == 2 &&
-        max_field_value(shared_log, "claimed ") <= 16;
+    const bool divided = count_field_at_least(shared_log, "granted=", 8) == 2 &&
+        max_field_value(shared_log, "granted=") <= 16;
 
     capture.clear();
     void * replacement = create_direct_session(cuda, cpu);
@@ -2014,7 +2505,7 @@ static bool run_shared_budget(
         ggml_moe_cache.session_destroy(replacement);
     }
     const std::string replacement_log = capture.get();
-    const bool released = max_field_value(replacement_log, "claimed ") >= 20;
+    const bool released = max_field_value(replacement_log, "granted=") >= 20;
 
     capture.clear();
     const std::string high_reserve = std::to_string(free_mib - 8);
@@ -2052,7 +2543,7 @@ static bool run_shared_budget(
     const std::string reserve_log = capture.get();
     const bool reserve_lowered = high && low && after_high &&
         low_ready && after_high_ready &&
-        count_field_at_least(reserve_log, "claimed ", 8) == 2;
+        count_field_at_least(reserve_log, "granted=", 8) == 2;
     configure_cache(nullptr);
 
     const bool ok = first_ready && second_ready && divided &&
@@ -2274,7 +2765,7 @@ int main() {
         return 1;
     }
     ggml_init_params static_params = {
-        12 * ggml_tensor_overhead(),
+        16 * ggml_tensor_overhead(),
         nullptr,
         true,
     };
@@ -2288,11 +2779,14 @@ int main() {
 
     ggml_tensor * weights = ggml_new_tensor_3d(
             static_ctx, GGML_TYPE_Q4_0, n_in, n_out, n_expert);
+    ggml_tensor * gate_weights = ggml_new_tensor_3d(
+            static_ctx, GGML_TYPE_Q4_0, n_in, n_out, n_expert);
     ggml_tensor * ids = ggml_new_tensor_2d(
             static_ctx, GGML_TYPE_I32, n_used, n_tokens);
     ggml_tensor * activations = ggml_new_tensor_3d(
             static_ctx, GGML_TYPE_F32, n_in, 1, n_tokens);
     ggml_set_name(weights, "blk.0.ffn_up_exps.weight");
+    ggml_set_name(gate_weights, "blk.0.ffn_gate_exps.weight");
     ggml_set_name(ids, "moe_cache_test_ids");
     ggml_set_name(activations, "moe_cache_test_activations");
 
@@ -2329,6 +2823,29 @@ int main() {
     }
     ggml_backend_tensor_set(
             weights, weights_q4.data(), 0, weights_q4.size());
+
+    std::vector<float> gate_weights_f32(ggml_nelements(gate_weights));
+    for (size_t index = 0; index < gate_weights_f32.size(); index++) {
+        gate_weights_f32[index] =
+            0.11f * std::sin((float) (index % 881) * 0.021f) -
+            0.08f * std::cos((float) (index % 389) * 0.027f);
+    }
+    std::vector<uint8_t> gate_weights_q4(ggml_nbytes(gate_weights));
+    const size_t gate_quantized = ggml_quantize_chunk(
+            GGML_TYPE_Q4_0, gate_weights_f32.data(), gate_weights_q4.data(),
+            0, n_out * n_expert, n_in, nullptr);
+    if (gate_quantized != gate_weights_q4.size()) {
+        fprintf(stderr, "unexpected gate quantized size: %zu != %zu\n",
+                gate_quantized, gate_weights_q4.size());
+        ggml_backend_buffer_free(static_buffer);
+        ggml_free(static_ctx);
+        ggml_backend_free(cuda);
+        ggml_backend_free(cpu);
+        return 1;
+    }
+    ggml_backend_tensor_set(
+            gate_weights, gate_weights_q4.data(), 0,
+            gate_weights_q4.size());
 
     const int32_t ids_data[n_used] = { 0, 1 };
     ggml_backend_tensor_set(ids, ids_data, 0, sizeof(ids_data));
@@ -2367,6 +2884,67 @@ int main() {
     ggml_backend_tensor_get(
             graph.out, reference.data(), 0, reference.size() * sizeof(float));
 
+    test_graph fused_graph = make_fused_graph(
+            cpu, weights, gate_weights, activations, ids);
+    if (!fused_graph.ctx || !fused_graph.buffer) {
+        fprintf(stderr, "failed to create fused test graph\n");
+        free_graph(fused_graph);
+        free_graph(graph);
+        ggml_backend_buffer_free(static_buffer);
+        ggml_free(static_ctx);
+        ggml_backend_free(cuda);
+        ggml_backend_free(cpu);
+        return 1;
+    }
+    set_env("GGML_CUDA_MOE_CACHE", "0");
+    if (ggml_backend_graph_compute(cpu, fused_graph.graph) !=
+            GGML_STATUS_SUCCESS) {
+        fprintf(stderr, "fused CPU reference compute failed\n");
+        free_graph(fused_graph);
+        free_graph(graph);
+        ggml_backend_buffer_free(static_buffer);
+        ggml_free(static_ctx);
+        ggml_backend_free(cuda);
+        ggml_backend_free(cpu);
+        return 1;
+    }
+    std::vector<float> fused_reference(ggml_nelements(fused_graph.out));
+    ggml_backend_tensor_get(
+            fused_graph.out, fused_reference.data(), 0,
+            fused_reference.size() * sizeof(float));
+
+    test_graph clamped_fused_graph = make_clamped_fused_graph(
+            cpu, weights, gate_weights, activations, ids);
+    if (!clamped_fused_graph.ctx || !clamped_fused_graph.buffer) {
+        fprintf(stderr, "failed to create clamped fused test graph\n");
+        free_graph(clamped_fused_graph);
+        free_graph(fused_graph);
+        free_graph(graph);
+        ggml_backend_buffer_free(static_buffer);
+        ggml_free(static_ctx);
+        ggml_backend_free(cuda);
+        ggml_backend_free(cpu);
+        return 1;
+    }
+    set_env("GGML_CUDA_MOE_CACHE", "0");
+    if (ggml_backend_graph_compute(cpu, clamped_fused_graph.graph) !=
+            GGML_STATUS_SUCCESS) {
+        fprintf(stderr, "clamped fused CPU reference compute failed\n");
+        free_graph(clamped_fused_graph);
+        free_graph(fused_graph);
+        free_graph(graph);
+        ggml_backend_buffer_free(static_buffer);
+        ggml_free(static_ctx);
+        ggml_backend_free(cuda);
+        ggml_backend_free(cpu);
+        return 1;
+    }
+    std::vector<float> clamped_fused_reference(
+            ggml_nelements(clamped_fused_graph.out));
+    ggml_backend_tensor_get(
+            clamped_fused_graph.out, clamped_fused_reference.data(), 0,
+            clamped_fused_reference.size() * sizeof(float));
+
     bool ok = run_capability_queries(cuda_device, cpu);
     ok &= run_invalidation_hook_coverage(cpu);
     ok &= run_scenario("cache-hit", nullptr, cuda, cpu, graph, reference, capture);
@@ -2377,7 +2955,37 @@ int main() {
     ok &= run_scenario("collect-fallback", "collect", cuda, cpu, graph, reference, capture);
     ok &= run_scenario("insert-fallback", "insert", cuda, cpu, graph, reference, capture);
     ok &= run_scenario("slab-fallback", "slab", cuda, cpu, graph, reference, capture);
-    ok &= run_multi_token_scenario(cuda, cpu, weights, capture);
+    ok &= run_scenario(
+            "cache-fused-swiglu", nullptr, cuda, cpu,
+            fused_graph, fused_reference, capture,
+            "1", "fusion-nodes=");
+    ok &= run_scenario(
+            "cache-fused-dispatch-fallback", "dispatch", cuda, cpu,
+            fused_graph, fused_reference, capture,
+            "1", "fusion-attempts=");
+    ok &= run_scenario(
+            "cache-fused-collect-fallback", "collect", cuda, cpu,
+            fused_graph, fused_reference, capture,
+            "1", "fusion-nodes=");
+    ok &= run_scenario(
+            "cache-fused-clamped-swiglu", nullptr, cuda, cpu,
+            clamped_fused_graph, clamped_fused_reference, capture,
+            "1", "fusion-nodes=");
+    ok &= run_scenario(
+            "cache-fused-clamped-collect-fallback", "collect", cuda, cpu,
+            clamped_fused_graph, clamped_fused_reference, capture,
+            "1", "fusion-nodes=");
+    ok &= run_fused_partial_invalidation(
+            cuda, cpu, weights, gate_weights, activations,
+            weights_q4.data(), gate_weights_q4.data(),
+            fused_reference, capture);
+    ok &= run_fused_concurrent_sessions(
+            cuda_device, cuda, cpu, weights, gate_weights,
+            activations, ids, fused_graph, fused_reference, capture);
+    ok &= run_fused_repeated_lifecycle(
+            cuda, cpu, fused_graph, fused_reference, capture);
+    ok &= run_multi_token_scenario(
+            cuda, cpu, weights, gate_weights, capture);
     ok &= run_mxfp4_shared_pool(cuda, cpu, capture);
     const size_t expert_size = ggml_nbytes(weights) / n_expert;
     ok &= run_precensus_invalidation(
@@ -2430,6 +3038,7 @@ int main() {
     free_stress_fixture(stress);
     ok &= run_scope_isolation(cuda, cpu, weights);
     ok &= run_explicit_session_config(cuda, cpu);
+    ok &= run_policy_diagnostics(cuda, cpu, weights, capture);
     ok &= run_cpu_overlap_policy(cuda, cpu, weights, capture);
     ok &= run_adaptive_cpu_overlap_policy(cuda, cpu, weights, capture);
     ok &= run_shape_liveness(cuda, cpu);
@@ -2439,6 +3048,8 @@ int main() {
     ok &= run_route_override(cuda_device, cuda, cpu, capture);
     ok &= run_admission_policy(cuda, cpu, capture);
 
+    free_graph(clamped_fused_graph);
+    free_graph(fused_graph);
     free_graph(graph);
     ggml_backend_free(cuda);
 #ifdef GGML_BACKEND_DL

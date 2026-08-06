@@ -25,3 +25,13 @@ void ggml_cuda_moe_cache_mmv(
     const int32_t * ids_dev, const int32_t * act_ids_dev,
     float * dst_dev, int64_t n_in, int64_t n_out, int64_t n_slots,
     int64_t slot_stride_bytes, int64_t n_hits, int64_t act_rows, cudaStream_t stream);
+
+// Runs up * GLU(gate) for rows whose two independently cached experts are resident.
+void ggml_cuda_moe_cache_mmv_fused(
+    const void * up_pool, const void * gate_pool, ggml_type type0,
+    const char * act_q8, const int32_t * up_ids_dev,
+    const int32_t * gate_ids_dev, const int32_t * act_ids_dev,
+    float * dst_dev, int64_t n_in, int64_t n_out,
+    int64_t slot_stride_bytes, int64_t n_hits, int64_t act_rows,
+    float up_min, float up_max, float gate_min, float gate_max,
+    cudaStream_t stream);
