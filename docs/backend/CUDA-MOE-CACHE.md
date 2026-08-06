@@ -45,7 +45,7 @@ Tensor shapes are collected before pools are allocated. Allocation waits for at 
 
 When every routed row is resident, the cache keeps a bounded amount of work on the CPU while CUDA computes the other rows. The automatic work budget is 8 MiB of expert weights per token, then capped by token count, routing width, and one quarter of the node. Four-GPU sweeps found the automatic result at or within 0.6% of the best tested fixed row count on Qwen3-30B, DeepSeek V4 target-only and DSpark, and GLM-5.2 MTP. Nodes with an actual miss are unchanged.
 
-The `[moe-cache] enabled` message is printed only after the first pool is allocated. If it is absent, the cache did not become active.
+Common applications report an explicit or cache-aware-fit-selected mode at normal verbosity. Detailed backend messages use trace verbosity, so pass `-lv 4` when validating cache behavior. The `[moe-cache] enabled` message is printed only after the first pool is allocated. If it is absent from a trace log, the cache did not become active.
 
 ## Demand fill and eviction
 
@@ -107,7 +107,7 @@ Measure this model with three separate `llama-bench` arms and otherwise identica
 
 Other programs that use the common argument parser spell the repacking switches as `--repack` and `--no-repack` rather than `--repack on` and `--repack off`.
 
-Comparing arm 1 with arm 3 measures the end-to-end configuration benefit; comparing arm 2 with arm 3 isolates cache execution from repacking. A cache result is valid only when the logs contain `[moe-cache] enabled`, the expected MXFP4 pools, and nonzero hits in periodic or teardown statistics. Before reporting a speedup, also compare cache off and on for perplexity or logits, coherent generation, and retrieval or prompt-following at increasing context lengths. Token streams need not be identical because CPU and CUDA rounding can change near ties.
+Comparing arm 1 with arm 3 measures the end-to-end configuration benefit; comparing arm 2 with arm 3 isolates cache execution from repacking. Run with `-lv 4`; a cache result is valid only when the trace log contains `[moe-cache] enabled`, the expected MXFP4 pools, and nonzero hits in periodic or teardown statistics. Before reporting a speedup, also compare cache off and on for perplexity or logits, coherent generation, and retrieval or prompt-following at increasing context lengths. Token streams need not be identical because CPU and CUDA rounding can change near ties.
 
 ## GLM-5.2 validation and production profile
 
@@ -182,7 +182,7 @@ The normal CUDA allocator may trim an active expert cache as a last attempt to s
 
 ## Diagnostics and developer controls
 
-The context log reports the requested and resolved mode. If model shape, placement, or a fixed budget cannot satisfy automatic policy, `auto` resolves to `off` before graph execution. An active backend prints its full configuration only on first eligible use, so a transient scheduler session cannot make an `off` arm look enabled. The pool log then reports the physical CUDA device, weight type, expert size, slot count, and allocated bytes. Session teardown reports hits, misses, queue activity, fills, evictions, CPU-overlap rows, activation deduplication, and fallback counters for devices that processed cache nodes. `hits` and its denominator count tensor-expert residency probes. On a fused gate/up candidate, a half-resident pair therefore records one hit and one miss even though that row stays on the CPU. `fusion=A/B` separately reports the rows actually dispatched through the fused CUDA path over the candidate rows in successfully dispatched fused nodes. Set `GGML_CUDA_MOE_CACHE_STATS=N` to print the same counters every `N` collection calls.
+At normal verbosity, common applications report modes selected explicitly or by cache-aware fit. Pass `-lv 4` to see the context's requested and resolved mode and all backend diagnostics. If model shape, placement, or a fixed budget cannot satisfy automatic policy, `auto` resolves to `off` before graph execution. An active backend prints its full configuration only on first eligible use, so a transient scheduler session cannot make an `off` arm look enabled. The first successful allocation prints `[moe-cache] enabled`, and each pool log reports the physical CUDA device, weight type, expert size, slot count, and allocated bytes. Session teardown reports hits, misses, queue activity, fills, evictions, CPU-overlap rows, activation deduplication, and fallback counters for devices that processed cache nodes. `hits` and its denominator count tensor-expert residency probes. On a fused gate/up candidate, a half-resident pair therefore records one hit and one miss even though that row stays on the CPU. `fusion=A/B` separately reports the rows actually dispatched through the fused CUDA path over the candidate rows in successfully dispatched fused nodes. Set `GGML_CUDA_MOE_CACHE_STATS=N` to print the same counters every `N` collection calls.
 
 The following environment variables are implementation controls, not a stable command-line interface. They are read when a scheduler creates its cache session.
 
@@ -225,7 +225,7 @@ For an end-to-end comparison of automatic policy, let fit choose each arm and va
 CUDA_VISIBLE_DEVICES=0,1,2 ./build/bin/llama-bench \
     -m /path/to/model.gguf -p 0 -n 300 --n-gen-warmup 256 -r 5 \
     -ngl 99 -fitt 1024 -t CPU_THREAD_COUNT -fa on \
-    --moe-cache off,auto -o json
+    --moe-cache off,auto -lv 4 -o json
 ```
 
 Replace the uppercase placeholder with an integer appropriate for the host. This measures the complete automatic choice, which may use different expert placement in the two arms. Check the logs to confirm that the `auto` arm selected cache placement and allocated pools. Record GPU models, PCIe topology, CPU model, memory channels and speed, model quantization, exact placement, build revision, and all environment overrides.
@@ -236,7 +236,7 @@ For an isolated comparison with the same canonical CPU weights in both arms, use
 CUDA_VISIBLE_DEVICES=0,1,2 ./build/bin/llama-bench \
     -m /path/to/model.gguf -p 0 -n 300 --n-gen-warmup 256 -r 5 \
     -ngl 99 -ncmoe MODEL_MOE_LAYER_COUNT -t CPU_THREAD_COUNT -fa on \
-    -sm layer -ts 1/0/0 --moe-cache off,4096 --repack off -o json
+    -sm layer -ts 1/0/0 --moe-cache off,4096 --repack off -lv 4 -o json
 ```
 
 Adjust `4096` to the intended per-device MiB cap. A layer split with trailing zero shares keeps dense work on the first GPU while still creating every selected CUDA backend for cache use. `-sm none` creates only the main CUDA backend and is not a valid multi-GPU cache-capacity comparison. `llama-bench` records the effective repack setting and rejects repacking with cache `on` or a fixed budget.

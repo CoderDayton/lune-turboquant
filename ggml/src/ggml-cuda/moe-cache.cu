@@ -249,6 +249,7 @@ struct moe_cache_session {
     std::atomic<bool> stopping{false};
     std::atomic<bool> dormant{false};
     std::atomic<bool> config_announced{false};
+    std::atomic<bool> enabled_announced{false};
     std::atomic<bool> batch_bypass_announced{false};
     int active_scopes = 0;
     int active_nodes = 0;
@@ -1287,6 +1288,10 @@ static bool moe_cache_allocate_pool(
     MOE_CACHE_LOG("[moe-cache] CUDA%d pool[%d]: type=%s expert=%zu KiB slots=%zu total=%zu MiB\n",
             device.physical, shape.pool, ggml_type_name((ggml_type)shape.wtype),
             shape.expert_size >> 10, slot_count, allocated >> 20);
+    bool expected = false;
+    if (session.enabled_announced.compare_exchange_strong(expected, true)) {
+        MOE_CACHE_LOG("[moe-cache] enabled: first pool allocated on CUDA%d\n", device.physical);
+    }
 
     return true;
 }

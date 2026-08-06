@@ -648,6 +648,7 @@ static bool run_scenario(
     bool stage_ok = false;
     if (!fail_stage) {
         stage_ok = live_hit &&
+            log.find("[moe-cache] enabled:") != std::string::npos &&
             max_field_value(log, "dispatch-fail=") == 0 &&
             max_field_value(log, "collect-fail=") == 0 &&
             (!required_field || has_positive_field(log, required_field));
