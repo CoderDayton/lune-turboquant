@@ -28,7 +28,7 @@ With default settings, a node must satisfy all of these conditions:
 - The operation is the regular CPU `MUL_MAT_ID` path with F32 activations, optionally in an exact supported gate/up/SwiGLU subgraph.
 - The weight tensor name contains `_exps`.
 - The weight type is supported by the CUDA quantized matvec kernel.
-- One expert meets the selected devices' effective size floor. The default is 64 KiB when every selected device is compute capability 8.0 or newer and 1 MiB otherwise. An explicit threshold remains authoritative.
+- One expert meets the selected devices' effective size floor. The default is 512 KiB when every selected device is compute capability 8.0 or newer and 1 MiB otherwise. An explicit threshold remains authoritative.
 - The graph node contains no more than the configured maximum token batch and no more than 64 routed rows. The default maximum is eight tokens in `auto` and one token in forced modes.
 - The selected device can hold a pool of at least 64 experts of that shape. Entries are aggregated across same-shape tensors, so an individual tensor may contain fewer than 64 experts.
 
@@ -40,7 +40,7 @@ min(configured budget, free VRAM - 3072 MiB reserve)
 
 The configured-budget term is omitted for `auto` and `on`. A fixed `N` is a cap for cache slabs and device-side dispatch scratch together, not a guaranteed slab allocation. Pool allocation may be smaller after reserving scratch or retrying an allocation, and no pool is created when fewer than 64 slots fit.
 
-Tensor shapes are collected before pools are allocated. Allocation waits for a repeated shape census and 64 stable visits so early graph discovery does not give all capacity to the first tensor shape. Capacity is divided among discovered shapes. A layer is assigned once to a selected device and keeps that assignment while the device remains usable. If that device cannot host a different tensor shape from the layer, the tensor receives its own stable assignment. Initial assignments are deterministic and weighted by usable slab capacity after existing pools and dispatch scratch are accounted for.
+Tensor shapes are collected before pools are allocated. Allocation waits for at least as many repeat visits as tensors observed so early graph discovery does not give all capacity to the first tensor shape. Capacity is divided among discovered shapes. A layer is assigned once to a selected device and keeps that assignment while the device remains usable. If that device cannot host a different tensor shape from the layer, the tensor receives its own stable assignment. Initial assignments are deterministic and weighted by usable slab capacity after existing pools and dispatch scratch are accounted for.
 
 When every routed row is resident, the cache keeps a bounded amount of work on the CPU while CUDA computes the other rows. The automatic work budget is 8 MiB of expert weights per token, then capped by token count, routing width, and one quarter of the node. Four-GPU sweeps found the automatic result at or within 0.6% of the best tested fixed row count on Qwen3-30B, DeepSeek V4 target-only and DSpark, and GLM-5.2 MTP. Nodes with an actual miss are unchanged.
 
@@ -150,12 +150,14 @@ These matched canonical-weight decode checks force routed experts to CPU memory.
 | Qwen3-30B-A3B Q4_K_XL | 71.93 t/s | 73.43 t/s | +2.1% |
 | Qwen3.6-35B-A3B Q4_K_XL | 77.60 t/s | 84.04 t/s | +8.3% |
 | DeepSeek-V2-Lite Q4_K_M | 65.04 t/s | 81.61 t/s | +25.5% |
-| Llama-4 Scout Q4_K_XL | 25.97 t/s | 33.54 t/s | +29.2% |
+| Llama-4 Scout Q4_K_XL | 25.97 t/s | 46.90 t/s | +80.6% |
 | MiniMax M2.7 IQ2_XXS | 37.76 t/s | 47.81 t/s | +26.6% |
 
-The updated hardware-aware threshold made the Qwen3.6 experts eligible on four RTX 3090 devices. Its row uses 512 warmup and 512 measured generation tokens with canonical CPU experts in both arms. A fixed 4096 MiB cache reached 83.89 t/s in the same run. Llama-4 has only 16 experts per tensor, but 48 layers contribute enough entries to its shared-shape pool. Aggregating those entries instead of applying the 64-slot floor to each tensor restored cache eligibility. With 512 warmup and 512 measured generation tokens, five same-binary samples reached `25.966 +/- 0.006` t/s off and `33.541 +/- 0.320` t/s with a fixed 4096 MiB cache. The older branch reached 45.03 t/s under a different cache budget and protocol, so it is retained only in the private historical ledger. This matrix is evidence for the tested hardware, not a guarantee that every eligible GPU and model will improve.
+The updated hardware-aware threshold made the Qwen3.6 experts eligible on four RTX 3090 devices. Its row uses 512 warmup and 512 measured generation tokens with canonical CPU experts in both arms. A fixed 4096 MiB cache reached 83.89 t/s in the same run. Llama-4 has only 16 experts per tensor, but 48 layers contribute enough entries to its shared-shape pool. Aggregating those entries instead of applying the 64-slot floor to each tensor restored cache eligibility. With 512 warmup and 512 measured generation tokens, five same-binary samples reached `25.966 +/- 0.006` t/s off, `33.541 +/- 0.320` t/s with a fixed 4096 MiB cache, and `46.901 +/- 0.235` t/s with the automatic budget. The literal default `--moe-cache auto` and default repacking reached `46.803 +/- 0.230` t/s over three samples. This exceeds the older branch's 45.03 t/s result without restoring redirect, backfill, or persistent state. This matrix is evidence for the tested hardware, not a guarantee that every eligible GPU and model will improve.
 
-The real OLMoE model also exercised the available quant families from Q2_K through Q8_0 with the automatic 64 KiB admission floor. The matched off versus fixed 4096 MiB results were 251.54 versus 263.34 t/s for Q2_K, 215.12 versus 257.65 t/s for Q3_K_M, 200.12 versus 265.97 t/s for Q4_0, 173.49 versus 256.55 t/s for Q5_K_M, 157.75 versus 236.78 t/s for Q6_K, and 130.60 versus 224.03 t/s for Q8_0. F16 remained dormant because that cache matvec type is unsupported and preserved parity at 74.43 versus 74.78 t/s. A fully resident Qwen3.6-35B control preserved repacking and remained dormant at 144.80 t/s off versus 144.68 t/s auto.
+The real OLMoE model also exercised the available quant families from Q2_K through Q8_0. The matched off versus fixed 4096 MiB results were 251.54 versus 263.34 t/s for Q2_K, 215.12 versus 257.65 t/s for Q3_K_M, 200.12 versus 265.97 t/s for Q4_0, 173.49 versus 256.55 t/s for Q5_K_M, 157.75 versus 236.78 t/s for Q6_K, and 130.60 versus 224.03 t/s for Q8_0. F16 remained dormant because that cache matvec type is unsupported and preserved parity at 74.43 versus 74.78 t/s. A fully resident Qwen3.6-35B control preserved repacking and remained dormant at 144.80 t/s off versus 144.68 t/s auto.
+
+The Ampere admission floor is 512 KiB rather than the earlier permissive 64 KiB. This is below the smallest profitable local experts: OLMoE Q2_K uses 672-880 KiB experts and reached `296.37 +/- 0.08` t/s at a 512 KiB floor versus `246.98 +/- 0.87` t/s when a 1 MiB floor made the cache dormant. Qwen3.6 uses 576-704 KiB experts and reached `92.88 +/- 0.76` versus `81.41 +/- 0.10` t/s in the same boundary test. No local measurement supports admitting experts below 512 KiB automatically. `GGML_CUDA_MOE_CACHE_MIN_EXPERT_KB` remains available for explicit experiments.
 
 Prompt processing remained on the stock path. In a reverse-order Qwen3.6 2048-token prompt test, auto reached 589.07 t/s and off reached 589.38 t/s, a 0.05% difference. A dense Qwen3.5-4B control reached 182.05 t/s in auto versus 182.68 t/s off. These small differences are within run variation and show that dormant or bypassed operation does not impose a material throughput cost on the tested system.
 
@@ -184,7 +186,7 @@ The following environment variables are implementation controls, not a stable co
 | Variable | Default | Meaning |
 | --- | ---: | --- |
 | `GGML_CUDA_MOE_CACHE_RESERVE_MB` | `3072` | VRAM left outside the cache on each device |
-| `GGML_CUDA_MOE_CACHE_MIN_EXPERT_KB` | hardware dependent | Minimum bytes per expert, in KiB; `64` when all selected devices are compute capability 8.0 or newer and `1024` otherwise |
+| `GGML_CUDA_MOE_CACHE_MIN_EXPERT_KB` | hardware dependent | Minimum bytes per expert, in KiB; `512` when all selected devices are compute capability 8.0 or newer and `1024` otherwise |
 | `GGML_CUDA_MOE_CACHE_MAX_BATCH` | mode dependent | Maximum tokens in an eligible node; `8` in auto and `1` when forced |
 | `GGML_CUDA_MOE_CACHE_INSERTS` | `8` | Maximum admissions per node |
 | `GGML_CUDA_MOE_CACHE_ADMIT_AFTER` | `2` | Miss count required before admission |

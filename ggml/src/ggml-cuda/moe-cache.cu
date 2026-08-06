@@ -47,7 +47,7 @@ void ggml_moe_cache_register(const void * owner) {
 
 static constexpr int    moe_cache_cc_forced_min               = 700;
 static constexpr int    moe_cache_cc_ampere                   = 800;
-static constexpr size_t moe_cache_expert_bytes_ampere_min     = 64u << 10;
+static constexpr size_t moe_cache_expert_bytes_ampere_min     = 512u << 10;
 static constexpr size_t moe_cache_expert_bytes_pre_ampere_min = 1u << 20;
 static constexpr int    moe_cache_batch_auto_max              = 8;
 static constexpr int    moe_cache_batch_forced_max            = 1;

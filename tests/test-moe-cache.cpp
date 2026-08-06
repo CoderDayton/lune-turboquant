@@ -453,12 +453,12 @@ static bool run_capability_queries(
     ok &= ggml_moe_cache.query_config(1, 0, &config) == 1;
     ok &= config.min_devices == 2;
     ok &= config.min_compute_capability == 800;
-    ok &= config.min_expert_bytes == 64u * 1024;
+    ok &= config.min_expert_bytes == 512u * 1024;
     ok &= config.min_expert_explicit == 0;
     ok &= config.max_batch == 8;
     ok &= config.overlap_cpu_rows == -1;
     ok &= ggml_moe_cache.query_device(cuda_device, &config, &device) == 1;
-    ok &= device.min_expert_bytes == 64u * 1024;
+    ok &= device.min_expert_bytes == 512u * 1024;
 
     ok &= ggml_moe_cache.query_config(0, 0, &config) == 1;
     ok &= config.min_devices == 1;
@@ -469,7 +469,7 @@ static bool run_capability_queries(
     ok &= config.overlap_cpu_rows == -1;
     ok &= ggml_moe_cache.query_device(cuda_device, &config, &device) == 1;
     ok &= device.min_expert_bytes == (device.compute_capability >= 800
-            ? 64u * 1024 : 1024u * 1024);
+            ? 512u * 1024 : 1024u * 1024);
     configure_cache(nullptr);
 
     printf("cache-capabilities: %s\n", ok ? "OK" : "FAIL");
