@@ -29,7 +29,7 @@ With default settings, a node must satisfy all of these conditions:
 - The weight tensor name contains `_exps`.
 - The weight type is supported by the CUDA quantized matvec kernel.
 - One expert meets the selected devices' effective size floor. The default is 512 KiB when every selected device is compute capability 8.0 or newer and 1 MiB otherwise. An explicit threshold remains authoritative.
-- The graph node contains no more than the configured maximum token batch and no more than 64 routed rows. The default maximum is eight tokens in `auto` and one token in forced modes.
+- The graph node contains no more than the configured maximum token batch and no more than 64 routed rows. The default maximum is eight tokens in every active mode.
 - The selected device can hold a pool of at least 64 experts of that shape. Entries are aggregated across same-shape tensors, so an individual tensor may contain fewer than 64 experts.
 - In `auto`, each selected device has at least 1 GiB available for aggregate cache slabs after dispatch scratch. Forced modes retain the 64-slot floor for explicit capacity experiments.
 
@@ -60,7 +60,7 @@ By default:
 - Independent device workers run concurrently when at least two compute capability 8.0 or newer devices are selected. Fills remain serialized on single-device or older-device configurations.
 - Full pools use LRU eviction. After a successful fill, that expert needs eight fresh misses before it can replace another entry.
 
-The default automatic maximum is eight tokens. Larger prompt-processing nodes bypass the cache, while single-token decode and current speculative verification batches remain eligible. Forced `on` and fixed-budget modes retain a conservative one-token default unless the environment control is changed.
+The default maximum is eight tokens. Larger prompt-processing nodes bypass the cache, while single-token decode and current speculative verification batches remain eligible in `auto`, `on`, and fixed-budget modes.
 
 ## DeepSeek V4 Flash and MXFP4
 
@@ -190,7 +190,7 @@ The following environment variables are implementation controls, not a stable co
 | --- | ---: | --- |
 | `GGML_CUDA_MOE_CACHE_RESERVE_MB` | `3072` | VRAM left outside the cache on each device |
 | `GGML_CUDA_MOE_CACHE_MIN_EXPERT_KB` | hardware dependent | Minimum bytes per expert, in KiB; `512` when all selected devices are compute capability 8.0 or newer and `1024` otherwise |
-| `GGML_CUDA_MOE_CACHE_MAX_BATCH` | mode dependent | Maximum tokens in an eligible node; `8` in auto and `1` when forced |
+| `GGML_CUDA_MOE_CACHE_MAX_BATCH` | `8` | Maximum tokens in an eligible node |
 | `GGML_CUDA_MOE_CACHE_INSERTS` | `8` | Maximum admissions per node |
 | `GGML_CUDA_MOE_CACHE_ADMIT_AFTER` | `2` | Miss count required before admission |
 | `GGML_CUDA_MOE_CACHE_THROTTLE` | `8` | Fresh misses required before replacing a full-pool entry |

@@ -468,7 +468,7 @@ static bool run_capability_queries(
     ok &= config.min_compute_capability == 700;
     ok &= config.min_expert_bytes == 1024u * 1024;
     ok &= config.min_expert_explicit == 0;
-    ok &= config.max_batch == 1;
+    ok &= config.max_batch == 8;
     ok &= config.overlap_cpu_rows == -1;
     ok &= ggml_moe_cache.query_device(cuda_device, &config, &device) == 1;
     ok &= device.min_expert_bytes == (device.compute_capability >= 800
@@ -759,15 +759,15 @@ static bool run_multi_token_scenario(
                     clamped_fused_graph, clamped_fused_reference);
         ok = ok && run_scenario(
                 "cache-multi-token", nullptr, cuda, cpu,
-                graph, reference, capture, "8", "act-dedup=");
+                graph, reference, capture, nullptr, "act-dedup=");
         ok = ok && run_scenario(
                 "cache-fused-multi-token", nullptr, cuda, cpu,
                 fused_graph, fused_reference, capture,
-                "8", "fusion-nodes=");
+                nullptr, "fusion-nodes=");
         ok = ok && run_scenario(
                 "cache-fused-clamped-multi-token", nullptr, cuda, cpu,
                 clamped_fused_graph, clamped_fused_reference, capture,
-                "8", "fusion-nodes=");
+                nullptr, "fusion-nodes=");
     }
 
     free_graph(clamped_fused_graph);

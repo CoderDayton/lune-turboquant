@@ -49,8 +49,7 @@ static constexpr int    moe_cache_cc_forced_min               = 700;
 static constexpr int    moe_cache_cc_ampere                   = 800;
 static constexpr size_t moe_cache_expert_bytes_ampere_min     = 512u << 10;
 static constexpr size_t moe_cache_expert_bytes_pre_ampere_min = 1u << 20;
-static constexpr int    moe_cache_batch_auto_max              = 8;
-static constexpr int    moe_cache_batch_forced_max            = 1;
+static constexpr int    moe_cache_batch_max                   = 8;
 static constexpr int    moe_cache_pool_slots_min              = 64;
 static constexpr size_t moe_cache_slab_bytes_auto_min         = 1ull << 30;
 static constexpr int    moe_cache_node_rows_max               = 64;
@@ -142,7 +141,7 @@ struct moe_cache_config {
     size_t minimum_slab_bytes = moe_cache_slab_bytes_auto_min;
     size_t min_expert_bytes = moe_cache_expert_bytes_pre_ampere_min;
     bool min_expert_explicit = false;
-    int max_batch = moe_cache_batch_forced_max;
+    int max_batch = moe_cache_batch_max;
     bool max_batch_explicit = false;
     int inserts_per_plan = 8;
     int admit_after = 2;
@@ -515,9 +514,7 @@ static void moe_cache_apply_mode_defaults(moe_cache_config & config) {
             : moe_cache_expert_bytes_pre_ampere_min;
     }
     if (!config.max_batch_explicit) {
-        config.max_batch = config.automatic
-            ? moe_cache_batch_auto_max
-            : moe_cache_batch_forced_max;
+        config.max_batch = moe_cache_batch_max;
     }
     if (!config.overlap_cpu_rows_explicit) {
         config.overlap_cpu_rows = -1;
@@ -562,7 +559,7 @@ static moe_cache_config moe_cache_read_config() {
         config.min_expert_explicit = true;
     }
     if (moe_cache_env_i64(
-            "GGML_CUDA_MOE_CACHE_MAX_BATCH", 1, moe_cache_batch_auto_max, value)) {
+            "GGML_CUDA_MOE_CACHE_MAX_BATCH", 1, moe_cache_batch_max, value)) {
         config.max_batch = (int)value;
         config.max_batch_explicit = true;
     }
@@ -1479,7 +1476,7 @@ static void * moe_cache_session_create(
                 supplied_config->min_expert_explicit < 0 ||
                 supplied_config->min_expert_explicit > 1 ||
                 supplied_config->max_batch < 1 ||
-                supplied_config->max_batch > moe_cache_batch_auto_max ||
+                supplied_config->max_batch > moe_cache_batch_max ||
                 supplied_config->min_devices < 1 ||
                 supplied_config->min_compute_capability < 0 ||
                 supplied_config->min_compute_capability > 999 ||
