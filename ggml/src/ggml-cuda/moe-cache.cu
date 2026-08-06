@@ -164,8 +164,7 @@ struct moe_cache_config {
 struct moe_cache_session;
 
 struct moe_cache_scratch {
-    size_t ids = 0;
-    size_t act = 0;
+    size_t input = 0;
     size_t q8 = 0;
     size_t out = 0;
 };
@@ -201,14 +200,10 @@ struct moe_cache_device {
     std::thread worker;
 
     cudaStream_t compute_stream = nullptr;
-    int32_t * h_ids = nullptr;
-    int32_t * d_ids = nullptr;
-    size_t h_ids_cap = 0;
-    size_t d_ids_cap = 0;
-    float * h_act = nullptr;
-    float * d_act = nullptr;
-    size_t h_act_cap = 0;
-    size_t d_act_cap = 0;
+    char * h_input = nullptr;
+    char * d_input = nullptr;
+    size_t h_input_cap = 0;
+    size_t d_input_cap = 0;
     void * d_act_q8 = nullptr;
     size_t act_q8_cap = 0;
     float * d_out = nullptr;
@@ -849,9 +844,13 @@ static bool moe_cache_scratch_requirements(
         return false;
     }
 
+    const size_t ids_bytes = 3 * max_rows * sizeof(int32_t);
+    const size_t act_bytes = max_rows * (size_t)n_in * sizeof(float);
+    if (ids_bytes > SIZE_MAX - act_bytes) {
+        return false;
+    }
     const size_t capacities[] = {
-        moe_cache_growth_capacity(0, 3 * max_rows * sizeof(int32_t)),
-        moe_cache_growth_capacity(0, max_rows * (size_t)n_in * sizeof(float)),
+        moe_cache_growth_capacity(0, ids_bytes + act_bytes),
         moe_cache_growth_capacity(
                 0, max_rows * (size_t)(padded_n_in / QK8_1) * sizeof(block_q8_1)),
         moe_cache_growth_capacity(0, max_rows * (size_t)n_out * sizeof(float)),
@@ -861,7 +860,7 @@ static bool moe_cache_scratch_requirements(
             return false;
         }
     }
-    result = {capacities[0], capacities[1], capacities[2], capacities[3]};
+    result = {capacities[0], capacities[1], capacities[2]};
     return true;
 }
 
@@ -869,8 +868,7 @@ static size_t moe_cache_scratch_total(
         const moe_cache_scratch & current,
         const moe_cache_scratch * additional = nullptr) {
     const size_t capacities[] = {
-        additional ? std::max(current.ids, additional->ids) : current.ids,
-        additional ? std::max(current.act, additional->act) : current.act,
+        additional ? std::max(current.input, additional->input) : current.input,
         additional ? std::max(current.q8, additional->q8) : current.q8,
         additional ? std::max(current.out, additional->out) : current.out,
     };
@@ -1654,15 +1652,10 @@ static void moe_cache_free_device(moe_cache_device & device) {
             pool_ptr->slab = nullptr;
         }
     }
-    if (device.d_ids) {
-        cudaFree(device.d_ids);
-        moe_cache_budget_allocation(device, device.d_ids_cap, false);
-        device.d_ids = nullptr;
-    }
-    if (device.d_act) {
-        cudaFree(device.d_act);
-        moe_cache_budget_allocation(device, device.d_act_cap, false);
-        device.d_act = nullptr;
+    if (device.d_input) {
+        cudaFree(device.d_input);
+        moe_cache_budget_allocation(device, device.d_input_cap, false);
+        device.d_input = nullptr;
     }
     if (device.d_act_q8) {
         cudaFree(device.d_act_q8);
@@ -1674,13 +1667,9 @@ static void moe_cache_free_device(moe_cache_device & device) {
         moe_cache_budget_allocation(device, device.d_out_cap, false);
         device.d_out = nullptr;
     }
-    if (device.h_ids) {
-        cudaFreeHost(device.h_ids);
-        device.h_ids = nullptr;
-    }
-    if (device.h_act) {
-        cudaFreeHost(device.h_act);
-        device.h_act = nullptr;
+    if (device.h_input) {
+        cudaFreeHost(device.h_input);
+        device.h_input = nullptr;
     }
     if (device.h_out) {
         cudaFreeHost(device.h_out);
@@ -1692,12 +1681,10 @@ static void moe_cache_free_device(moe_cache_device & device) {
     }
     device.pools.clear();
     device.allocated_bytes = 0;
-    device.d_ids_cap = 0;
-    device.d_act_cap = 0;
+    device.d_input_cap = 0;
     device.act_q8_cap = 0;
     device.d_out_cap = 0;
-    device.h_ids_cap = 0;
-    device.h_act_cap = 0;
+    device.h_input_cap = 0;
     device.h_out_cap = 0;
 }
 
@@ -2066,10 +2053,8 @@ static void * moe_cache_begin(
             minimum_pool > selected->budget_limit - selected_scratch) {
             return nullptr;
         }
-        selected->scratch_reserve.ids = std::max(
-                selected->scratch_reserve.ids, scratch_requirements.ids);
-        selected->scratch_reserve.act = std::max(
-                selected->scratch_reserve.act, scratch_requirements.act);
+        selected->scratch_reserve.input = std::max(
+                selected->scratch_reserve.input, scratch_requirements.input);
         selected->scratch_reserve.q8 = std::max(
                 selected->scratch_reserve.q8, scratch_requirements.q8);
         selected->scratch_reserve.out = std::max(
@@ -2434,13 +2419,16 @@ static int moe_cache_dispatch_internal(
         (use_activation_map ? 1 : 0);
     const size_t ids_bytes = (size_t)n_hits * sizeof(int32_t) * id_arrays;
     const size_t act_bytes = (size_t)activation_rows * n_in * sizeof(float);
+    if (ids_bytes > SIZE_MAX - act_bytes) {
+        return 0;
+    }
+    const size_t input_bytes = ids_bytes + act_bytes;
     const size_t q8_bytes =
         (size_t)activation_rows * (padded_n_in / QK8_1) * sizeof(block_q8_1);
     const size_t out_bytes = (size_t)n_hits * n_out * sizeof(float);
 
     const size_t desired_caps[] = {
-        moe_cache_growth_capacity(device.d_ids_cap, ids_bytes),
-        moe_cache_growth_capacity(device.d_act_cap, act_bytes),
+        moe_cache_growth_capacity(device.d_input_cap, input_bytes),
         moe_cache_growth_capacity(device.act_q8_cap, q8_bytes),
         moe_cache_growth_capacity(device.d_out_cap, out_bytes),
     };
@@ -2462,14 +2450,10 @@ static int moe_cache_dispatch_internal(
         }
     }
 
-    if (!moe_cache_grow_host(device, (void **)&device.h_ids, device.h_ids_cap,
-                             ids_bytes, "ids host allocation") ||
-        !moe_cache_grow_device(device, (void **)&device.d_ids, device.d_ids_cap,
-                               ids_bytes, "ids device allocation") ||
-        !moe_cache_grow_host(device, (void **)&device.h_act, device.h_act_cap,
-                             act_bytes, "activation host allocation") ||
-        !moe_cache_grow_device(device, (void **)&device.d_act, device.d_act_cap,
-                               act_bytes, "activation device allocation") ||
+    if (!moe_cache_grow_host(device, (void **)&device.h_input, device.h_input_cap,
+                             input_bytes, "input host allocation") ||
+        !moe_cache_grow_device(device, (void **)&device.d_input, device.d_input_cap,
+                               input_bytes, "input device allocation") ||
         !moe_cache_grow_device(device, &device.d_act_q8, device.act_q8_cap,
                                q8_bytes, "q8 activation allocation") ||
         !moe_cache_grow_device(device, (void **)&device.d_out, device.d_out_cap,
@@ -2482,34 +2466,33 @@ static int moe_cache_dispatch_internal(
         return 0;
     }
 
+    int32_t * h_ids = (int32_t *)device.h_input;
+    float * h_act = (float *)(device.h_input + ids_bytes);
+    int32_t * d_ids = (int32_t *)device.d_input;
+    float * d_act = (float *)(device.d_input + ids_bytes);
     for (int index = 0; index < n_hits; index++) {
-        device.h_ids[index] = slot_indices[index];
+        h_ids[index] = slot_indices[index];
         if (fused) {
-            device.h_ids[n_hits + index] = gate_slot_indices[index];
+            h_ids[n_hits + index] = gate_slot_indices[index];
         }
         if (use_activation_map) {
-            device.h_ids[(fused ? 2 : 1) * n_hits + index] =
+            h_ids[(fused ? 2 : 1) * n_hits + index] =
                 activation_indices[index];
         }
     }
     for (int index = 0; index < activation_rows; index++) {
-        memcpy(device.h_act + (size_t)index * n_in,
+        memcpy(h_act + (size_t)index * n_in,
                unique_act_rows[index], n_in * sizeof(float));
     }
 
     (void)cudaGetLastError();
     bool ok =
         moe_cache_cuda_ok(device, cudaMemcpyAsync(
-                device.d_ids, device.h_ids, ids_bytes,
-                cudaMemcpyHostToDevice, device.compute_stream), "ids upload", true);
-    if (ok) {
-        ok = moe_cache_cuda_ok(device, cudaMemcpyAsync(
-                device.d_act, device.h_act, act_bytes,
-                cudaMemcpyHostToDevice, device.compute_stream), "activation upload", true);
-    }
+                device.d_input, device.h_input, input_bytes,
+                cudaMemcpyHostToDevice, device.compute_stream), "input upload", true);
     if (ok) {
         quantize_row_q8_1_cuda(
-                device.d_act, nullptr, device.d_act_q8, (ggml_type)wtype,
+                d_act, nullptr, device.d_act_q8, (ggml_type)wtype,
                 n_in, n_in, (int64_t)activation_rows * n_in,
                 (int64_t)activation_rows * n_in, padded_n_in,
                 activation_rows, 1, 1, device.compute_stream);
@@ -2521,8 +2504,8 @@ static int moe_cache_dispatch_internal(
             ggml_cuda_moe_cache_mmv_fused(
                     pool.slab, gate_pool->slab, (ggml_type)wtype,
                     (const char *)device.d_act_q8,
-                    device.d_ids, device.d_ids + n_hits,
-                    use_activation_map ? device.d_ids + 2 * n_hits : nullptr,
+                    d_ids, d_ids + n_hits,
+                    use_activation_map ? d_ids + 2 * n_hits : nullptr,
                     device.d_out, n_in, n_out,
                     (int64_t)pool.expert_size, n_hits, activation_rows,
                     up_min, up_max, gate_min, gate_max,
@@ -2530,8 +2513,8 @@ static int moe_cache_dispatch_internal(
         } else {
             ggml_cuda_moe_cache_mmv(
                     pool.slab, (ggml_type)wtype,
-                    (const char *)device.d_act_q8, device.d_ids,
-                    use_activation_map ? device.d_ids + n_hits : nullptr,
+                    (const char *)device.d_act_q8, d_ids,
+                    use_activation_map ? d_ids + n_hits : nullptr,
                     device.d_out, n_in, n_out, pool.n_slots,
                     (int64_t)pool.expert_size, n_hits, activation_rows,
                     device.compute_stream);
@@ -3108,8 +3091,8 @@ static size_t moe_cache_trim_session(
             freed += (size_t)pool_ptr->n_slots * pool_ptr->expert_size;
         }
     }
-    freed += selected->d_out_cap + selected->d_act_cap +
-             selected->act_q8_cap + selected->d_ids_cap;
+    freed += selected->d_out_cap + selected->d_input_cap +
+             selected->act_q8_cap;
     lock.unlock();
     moe_cache_free_device(*selected);
     moe_cache_budget_unregister(*selected);
