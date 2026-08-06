@@ -231,6 +231,10 @@ struct moe_cache_device {
     long long overlap_rows = 0;
     long long fused_rows = 0;
     long long fused_candidates = 0;
+    long long pair_both = 0;
+    long long pair_up_only = 0;
+    long long pair_gate_only = 0;
+    long long pair_neither = 0;
     long long fused_attempts = 0;
     long long fused_nodes = 0;
     long long nodes = 0;
@@ -1449,7 +1453,7 @@ static void moe_cache_log_stats(moe_cache_device & device) {
         used += pool.n_slots - pool.free_slots.size();
     }
     const long long total = device.hits + device.misses;
-    MOE_CACHE_LOG("[moe-cache] CUDA%d hits=%lld/%lld (%.1f%%) used=%zu/%zu enqueued=%lld filled=%lld fill-fail=%lld evictions=%lld skips=%lld admission=%lld queue=%zu jobs/%zu MiB dispatch-fail=%lld collect-fail=%lld act-dedup=%lld cpu-overlap=%lld fusion=%lld/%lld fusion-attempts=%lld fusion-nodes=%lld\n",
+    MOE_CACHE_LOG("[moe-cache] CUDA%d hits=%lld/%lld (%.1f%%) used=%zu/%zu enqueued=%lld filled=%lld fill-fail=%lld evictions=%lld skips=%lld admission=%lld queue=%zu jobs/%zu MiB dispatch-fail=%lld collect-fail=%lld act-dedup=%lld cpu-overlap=%lld fusion=%lld/%lld pairs=%lld/%lld/%lld/%lld fusion-attempts=%lld fusion-nodes=%lld\n",
             device.physical, device.hits, total,
             total ? 100.0 * (double)device.hits / (double)total : 0.0,
             used, slots, device.inserts, device.fills, device.fill_failures,
@@ -1458,6 +1462,8 @@ static void moe_cache_log_stats(moe_cache_device & device) {
             device.dispatch_failures, device.collect_failures,
             device.activation_dedup, device.overlap_rows,
             device.fused_rows, device.fused_candidates,
+            device.pair_both, device.pair_up_only,
+            device.pair_gate_only, device.pair_neither,
             device.fused_attempts,
             device.fused_nodes);
 }
@@ -2872,6 +2878,15 @@ static void * moe_cache_fused_begin(
                 if (gate_found != pool->map.end() &&
                     pool->slots[gate_found->second].state == moe_cache_slot_state::valid) {
                     resident_gate[index] = gate_found->second;
+                }
+                if (resident_up[index] >= 0 && resident_gate[index] >= 0) {
+                    selected->pair_both++;
+                } else if (resident_up[index] >= 0) {
+                    selected->pair_up_only++;
+                } else if (resident_gate[index] >= 0) {
+                    selected->pair_gate_only++;
+                } else {
+                    selected->pair_neither++;
                 }
             }
 
