@@ -1813,7 +1813,7 @@ static bool direct_begin_ready(
         int direct_type, int64_t direct_n_expert) {
     void * node = ggml_moe_cache.begin(
             name, base, expert_size, direct_n_in, direct_n_out,
-            direct_type, direct_n_expert, 1);
+            direct_type, direct_n_expert, 1, 1);
     if (!node) {
         return false;
     }
@@ -1852,7 +1852,7 @@ static bool run_policy_diagnostics(
     void * first = ggml_moe_cache.begin(
             weights->name, weights->data, expert_size,
             weights->ne[0], weights->ne[1], weights->type,
-            weights->ne[2], 1);
+            weights->ne[2], 1, 1);
     const bool census_waited = first == nullptr;
     if (first) {
         ggml_moe_cache.end(first);
@@ -1860,7 +1860,7 @@ static bool run_policy_diagnostics(
     void * second = ggml_moe_cache.begin(
             weights->name, weights->data, expert_size,
             weights->ne[0], weights->ne[1], weights->type,
-            weights->ne[2], 1);
+            weights->ne[2], 1, 1);
     const bool census_completed = second != nullptr;
     if (second) {
         ggml_moe_cache.end(second);
@@ -1869,10 +1869,17 @@ static bool run_policy_diagnostics(
         void * oversize = ggml_moe_cache.begin(
                 weights->name, weights->data, expert_size,
                 weights->ne[0], weights->ne[1], weights->type,
-                weights->ne[2], n_tokens);
+                weights->ne[2], n_tokens, n_tokens);
         if (oversize) {
             ggml_moe_cache.end(oversize);
         }
+    }
+    void * excess_rows = ggml_moe_cache.begin(
+            weights->name, weights->data, expert_size,
+            weights->ne[0], weights->ne[1], weights->type,
+            weights->ne[2], 1, 65);
+    if (excess_rows) {
+        ggml_moe_cache.end(excess_rows);
     }
     ggml_moe_cache.session_leave(session);
     ggml_moe_cache.session_destroy(session);
@@ -1886,9 +1893,10 @@ static bool run_policy_diagnostics(
         log.find("free=") != std::string::npos &&
         log.find("reserve=0 MiB") != std::string::npos;
     const bool bypass = count_occurrences(log, "above max-batch=1") == 1;
+    const bool row_bypass = count_occurrences(log, "above row limit=64") == 1;
     const bool pool = count_occurrences(log, " pool[") == 1;
     const bool ok = census_waited && census_completed && configured &&
-        capacity && bypass && pool;
+        capacity && bypass && row_bypass && pool;
     if (!ok) {
         fprintf(stderr, "cache-policy-diagnostics: expected diagnostics were not observed\n%s", log.c_str());
     }
@@ -1902,7 +1910,7 @@ static int direct_plan_one(
         int direct_type, int64_t direct_n_expert, int32_t expert) {
     void * node = ggml_moe_cache.begin(
             name, base, expert_size, direct_n_in, direct_n_out,
-            direct_type, direct_n_expert, 1);
+            direct_type, direct_n_expert, 1, 1);
     if (!node) {
         return -1;
     }
@@ -1920,7 +1928,7 @@ static int direct_plan_many(
         int64_t direct_n_tokens = 1) {
     void * node = ggml_moe_cache.begin(
             name, base, expert_size, direct_n_in, direct_n_out,
-            direct_type, direct_n_expert, direct_n_tokens);
+            direct_type, direct_n_expert, direct_n_tokens, n_experts);
     if (!node) {
         return -1;
     }

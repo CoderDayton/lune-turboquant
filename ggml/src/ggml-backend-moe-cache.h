@@ -70,7 +70,8 @@ struct ggml_moe_cache_api {
 
     // Begin one CPU MUL_MAT_ID node. Returns an opaque plan, or NULL when the stock CPU path should handle the complete node.
     void * (*begin)(const char * tensor_name, const void * host_base, size_t expert_size,
-                    int64_t n_in, int64_t n_out, int wtype, int64_t n_expert, int64_t n_tokens);
+                    int64_t n_in, int64_t n_out, int wtype, int64_t n_expert,
+                    int64_t n_tokens, int64_t n_rows);
 
     // Mark cache hits and enqueue bounded demand fills for misses. A nonnegative slot index means that the row may be omitted from CPU work only if dispatch subsequently succeeds.
     int (*plan)(void * node, const int32_t * ids, int n_ids, int32_t * slot_idx);

@@ -253,6 +253,7 @@ struct moe_cache_session {
     std::atomic<bool> config_announced{false};
     std::atomic<bool> enabled_announced{false};
     std::atomic<bool> batch_bypass_announced{false};
+    std::atomic<bool> row_bypass_announced{false};
     int active_scopes = 0;
     int active_nodes = 0;
     struct active_source {
@@ -1817,7 +1818,8 @@ static void moe_cache_session_leave(void * opaque) {
 
 static void * moe_cache_begin(
         const char * name, const void * host_base, size_t expert_size,
-        int64_t n_in, int64_t n_out, int wtype, int64_t n_expert, int64_t n_tokens) {
+        int64_t n_in, int64_t n_out, int wtype, int64_t n_expert,
+        int64_t n_tokens, int64_t n_rows) {
     if (g_session_suppressed > 0 || g_session_stack.empty()) {
         return nullptr;
     }
@@ -1833,11 +1835,22 @@ static void * moe_cache_begin(
         !moe_cache_type_supported((ggml_type)wtype)) {
         return nullptr;
     }
+    if (n_rows < n_tokens || n_rows % n_tokens != 0) {
+        return nullptr;
+    }
     if (n_tokens > session->config.max_batch) {
         bool expected = false;
         if (session->batch_bypass_announced.compare_exchange_strong(expected, true)) {
             MOE_CACHE_LOG("[moe-cache] bypassing %lld-token node above max-batch=%d; prompt batches normally use the CPU path, while larger decode or speculative batches will not use the cache\n",
                     (long long)n_tokens, session->config.max_batch);
+        }
+        return nullptr;
+    }
+    if (n_rows > moe_cache_node_rows_max) {
+        bool expected = false;
+        if (session->row_bypass_announced.compare_exchange_strong(expected, true)) {
+            MOE_CACHE_LOG("[moe-cache] bypassing %lld-row node above row limit=%d; the stock CPU path remains active\n",
+                    (long long)n_rows, moe_cache_node_rows_max);
         }
         return nullptr;
     }

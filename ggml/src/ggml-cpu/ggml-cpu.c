@@ -1576,10 +1576,11 @@ static void ggml_compute_forward_mul_mat_id_impl(
     const int n_as  = ne02;       // n_expert
 
     // MoE expert cache state is used by thread 0 only.
+    const int64_t moe_cache_n_rows = ids->ne[0] > 0 && ids->ne[1] > 0 &&
+        ids->ne[0] <= INT64_MAX / ids->ne[1]
+        ? ids->ne[0] * ids->ne[1] : INT64_MAX;
     const bool moe_cache_rows_fit =
-        n_ids > 0 && ids->ne[1] > 0 &&
-        n_ids <= MOE_CACHE_MAX_TOPK &&
-        ids->ne[1] <= MOE_CACHE_MAX_TOPK / n_ids;
+        moe_cache_n_rows <= MOE_CACHE_MAX_TOPK;
     void *        moe_cache_node = NULL;
     int           moe_cache_n_hits = 0;
     int32_t       moe_cache_slot_idx[MOE_CACHE_MAX_TOPK];
@@ -1653,11 +1654,14 @@ static void ggml_compute_forward_mul_mat_id_impl(
             src0->op == GGML_OP_NONE && src0_buffer &&
             ggml_backend_buffer_is_host(src0_buffer) &&
             ggml_backend_buffer_get_usage(src0_buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
-            src1->type == GGML_TYPE_F32 &&
-            moe_cache_rows_fit) {
+            src1->type == GGML_TYPE_F32) {
             moe_cache_node = ggml_moe_cache.begin(src0->name, src0->data, nb02,
-                                                  ne00, ne01, (int) type, ne02, ids->ne[1]);
-            if (moe_cache_node) {
+                                                  ne00, ne01, (int) type, ne02,
+                                                  ids->ne[1], moe_cache_n_rows);
+            if (moe_cache_node && !moe_cache_rows_fit) {
+                ggml_moe_cache.end(moe_cache_node);
+                moe_cache_node = NULL;
+            } else if (moe_cache_node) {
                 int32_t expert_ids[MOE_CACHE_MAX_TOPK];
                 for (int64_t iid1 = 0; iid1 < ids->ne[1]; ++iid1) {
                     for (int id = 0; id < n_ids; ++id) {
