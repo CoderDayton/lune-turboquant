@@ -95,6 +95,7 @@ struct moe_cache_pool {
     int wtype = -1;
     char * slab = nullptr;
     int n_slots = 0;
+    bool covers_all_entries = false;
 
     std::vector<moe_cache_slot> slots;
     std::vector<int> free_slots;
@@ -145,6 +146,7 @@ struct moe_cache_config {
     bool max_batch_explicit = false;
     int inserts_per_plan = 8;
     int admit_after = 2;
+    bool admit_after_explicit = false;
     int readmit_after = 8;
     int queue_max = 128;
     size_t queue_mb = 512;
@@ -569,6 +571,7 @@ static moe_cache_config moe_cache_read_config() {
     }
     if (moe_cache_env_i64("GGML_CUDA_MOE_CACHE_ADMIT_AFTER", 1, 255, value)) {
         config.admit_after = (int)value;
+        config.admit_after_explicit = true;
     }
     if (moe_cache_env_i64("GGML_CUDA_MOE_CACHE_THROTTLE", 1, 1024, value)) {
         config.readmit_after = (int)value;
@@ -1259,6 +1262,7 @@ static bool moe_cache_allocate_pool(
         pool->wtype = shape.wtype;
         pool->slab = slab;
         pool->n_slots = (int)slot_count;
+        pool->covers_all_entries = (uint64_t)slot_count >= shape.n_entries;
         pool->slots.resize(slot_count);
         pool->free_slots.reserve(slot_count);
         pool->map.reserve(slot_count);
@@ -1285,9 +1289,12 @@ static bool moe_cache_allocate_pool(
         return false;
     }
 
-    MOE_CACHE_LOG("[moe-cache] CUDA%d pool[%d]: type=%s expert=%zu KiB slots=%zu total=%zu MiB\n",
+    MOE_CACHE_LOG("[moe-cache] CUDA%d pool[%d]: type=%s expert=%zu KiB slots=%zu entries=%llu coverage=%s total=%zu MiB\n",
             device.physical, shape.pool, ggml_type_name((ggml_type)shape.wtype),
-            shape.expert_size >> 10, slot_count, allocated >> 20);
+            shape.expert_size >> 10, slot_count,
+            (unsigned long long)shape.n_entries,
+            device.pools.back()->covers_all_entries ? "complete" : "partial",
+            allocated >> 20);
     bool expected = false;
     if (session.enabled_announced.compare_exchange_strong(expected, true)) {
         MOE_CACHE_LOG("[moe-cache] enabled: first pool allocated on CUDA%d\n", device.physical);
@@ -1380,7 +1387,10 @@ static int moe_cache_discover_pool(
         const void * host_base, size_t tensor_size, size_t expert_size,
         int wtype, int64_t n_expert) {
     int pool = moe_cache_find_pool(device, expert_size, wtype);
-    if (pool >= 0) {
+    if (pool >= 0 && !device.pools[pool]->covers_all_entries) {
+        return pool;
+    }
+    if (pool >= 0 && device.seen_tensors.find(host_base) != device.seen_tensors.end()) {
         return pool;
     }
 
@@ -1394,6 +1404,7 @@ static int moe_cache_discover_pool(
     if (!shape) {
         device.shapes.push_back({expert_size, wtype, 0, 0, -1, false});
         shape = &device.shapes.back();
+        shape->pool = pool;
     }
 
     const bool first_visit = device.seen_tensors.emplace(
@@ -1412,6 +1423,12 @@ static int moe_cache_discover_pool(
         if (device.visits_since_new_tensor < SIZE_MAX) {
             device.visits_since_new_tensor++;
         }
+    }
+
+    if (pool >= 0) {
+        device.pools[pool]->covers_all_entries =
+            (uint64_t)device.pools[pool]->n_slots >= shape->n_entries;
+        return pool;
     }
 
     if (device.visits_since_new_tensor < device.seen_tensors.size()) {
@@ -1455,14 +1472,19 @@ static void moe_cache_log_configuration(moe_cache_session & session) {
         : "free-minus-reserve";
     const std::string overlap_cpu_rows = session.config.overlap_cpu_rows < 0
         ? "auto" : std::to_string(session.config.overlap_cpu_rows);
-    MOE_CACHE_LOG("[moe-cache] configured: mode=%s devices=%zu budget=%s reserve=%zu MiB min-slab=%zu MiB min-expert=%zu KiB max-batch=%d admit=%d/%d cpu-overlap=%s fills=%s\n",
+    const std::string admission = session.config.admit_after_explicit
+        ? std::to_string(session.config.admit_after) + "-fixed/" +
+            std::to_string(session.config.readmit_after) + "-replace"
+        : "1-complete/" + std::to_string(session.config.admit_after) +
+            "-partial/" + std::to_string(session.config.readmit_after) + "-replace";
+    MOE_CACHE_LOG("[moe-cache] configured: mode=%s devices=%zu budget=%s reserve=%zu MiB min-slab=%zu MiB min-expert=%zu KiB max-batch=%d admit=%s cpu-overlap=%s fills=%s\n",
             session.config.automatic ? "auto" : "on",
             session.devices.size(), budget.c_str(),
             session.config.reserve_mb,
             session.config.minimum_slab_bytes >> 20,
             session.config.min_expert_bytes >> 10,
             session.config.max_batch,
-            session.config.admit_after, session.config.readmit_after,
+            admission.c_str(),
             overlap_cpu_rows.c_str(),
             session.config.serial_fill ? "serial" : "parallel");
 }
@@ -2156,9 +2178,12 @@ static int moe_cache_lookup_or_queue_locked(
     if (demand->count < std::numeric_limits<uint16_t>::max()) {
         demand->count++;
     }
+    const int initial_admit_after =
+        pool.covers_all_entries && !session.config.admit_after_explicit
+            ? 1 : session.config.admit_after;
     const int admit_after = pool.free_slots.empty()
-        ? std::max(session.config.admit_after, session.config.readmit_after)
-        : session.config.admit_after;
+        ? std::max(initial_admit_after, session.config.readmit_after)
+        : initial_admit_after;
     if (demand->count < admit_after) {
         device.admission_skips++;
         return -1;
@@ -2985,6 +3010,10 @@ static void moe_cache_invalidate_session(
                         shape.n_entries = entries <= shape.n_entries
                             ? shape.n_entries - entries : 0;
                         shape.n_tensors = std::max<int64_t>(shape.n_tensors - 1, 0);
+                        if (shape.pool >= 0 && shape.pool < (int)device.pools.size()) {
+                            device.pools[shape.pool]->covers_all_entries =
+                                (uint64_t)device.pools[shape.pool]->n_slots >= shape.n_entries;
+                        }
                         if (shape.n_tensors == 0 && shape.pool < 0) {
                             shape.finished = false;
                         }

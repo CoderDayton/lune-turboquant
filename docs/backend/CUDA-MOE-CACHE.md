@@ -53,7 +53,7 @@ The cache never transfers a missing expert synchronously for the current matvec.
 
 By default:
 
-- An expert is admitted after its second observed miss.
+- A pool that can hold every discovered entry admits an expert after its first miss. A capacity-constrained pool admits after the second miss.
 - At most 8 fills are enqueued by one node.
 - A device queue is limited to 128 jobs and 512 MiB.
 - Each device has one low-priority CUDA fill stream.
@@ -182,7 +182,7 @@ The normal CUDA allocator may trim an active expert cache as a last attempt to s
 
 ## Diagnostics and developer controls
 
-At normal verbosity, common applications report modes selected explicitly or by cache-aware fit. Pass `-lv 4` to see the context's requested and resolved mode and all backend diagnostics. If model shape, placement, or a fixed budget cannot satisfy automatic policy, `auto` resolves to `off` before graph execution. An active backend prints its full configuration only on first eligible use, so a transient scheduler session cannot make an `off` arm look enabled. The first successful allocation prints `[moe-cache] enabled`, and each pool log reports the physical CUDA device, weight type, expert size, slot count, and allocated bytes. Session teardown reports hits, misses, queue activity, fills, evictions, CPU-overlap rows, activation deduplication, and fallback counters for devices that processed cache nodes. `hits` and its denominator count tensor-expert residency probes. On a fused gate/up candidate, a half-resident pair therefore records one hit and one miss even though that row stays on the CPU. `fusion=A/B` separately reports the rows actually dispatched through the fused CUDA path over the candidate rows in successfully dispatched fused nodes. Set `GGML_CUDA_MOE_CACHE_STATS=N` to print the same counters every `N` collection calls.
+At normal verbosity, common applications report modes selected explicitly or by cache-aware fit. Pass `-lv 4` to see the context's requested and resolved mode and all backend diagnostics. If model shape, placement, or a fixed budget cannot satisfy automatic policy, `auto` resolves to `off` before graph execution. An active backend prints its full configuration only on first eligible use, so a transient scheduler session cannot make an `off` arm look enabled. The first successful allocation prints `[moe-cache] enabled`, and each pool log reports the physical CUDA device, weight type, expert size, slot count, discovered entry count, complete or partial coverage, and allocated bytes. Session teardown reports hits, misses, queue activity, fills, evictions, CPU-overlap rows, activation deduplication, and fallback counters for devices that processed cache nodes. `hits` and its denominator count tensor-expert residency probes. On a fused gate/up candidate, a half-resident pair therefore records one hit and one miss even though that row stays on the CPU. `fusion=A/B` separately reports the rows actually dispatched through the fused CUDA path over the candidate rows in successfully dispatched fused nodes. Set `GGML_CUDA_MOE_CACHE_STATS=N` to print the same counters every `N` collection calls.
 
 The following environment variables are implementation controls, not a stable command-line interface. They are read when a scheduler creates its cache session.
 
@@ -192,7 +192,7 @@ The following environment variables are implementation controls, not a stable co
 | `GGML_CUDA_MOE_CACHE_MIN_EXPERT_KB` | hardware dependent | Minimum bytes per expert, in KiB; `512` when all selected devices are compute capability 8.0 or newer and `1024` otherwise |
 | `GGML_CUDA_MOE_CACHE_MAX_BATCH` | `8` | Maximum tokens in an eligible node |
 | `GGML_CUDA_MOE_CACHE_INSERTS` | `8` | Maximum admissions per node |
-| `GGML_CUDA_MOE_CACHE_ADMIT_AFTER` | `2` | Miss count required before admission |
+| `GGML_CUDA_MOE_CACHE_ADMIT_AFTER` | adaptive | Override the initial miss count; by default it is `1` for complete pools and `2` for capacity-constrained pools |
 | `GGML_CUDA_MOE_CACHE_THROTTLE` | `8` | Fresh misses required before replacing a full-pool entry |
 | `GGML_CUDA_MOE_CACHE_QUEUE` | `128` | Maximum queued jobs per device |
 | `GGML_CUDA_MOE_CACHE_QUEUE_MB` | `512` | Maximum queued source bytes per device |

@@ -2346,6 +2346,9 @@ static bool run_exact_shape_inventory(
         log_capture & capture) {
     configure_cache(nullptr);
     set_env("GGML_CUDA_MOE_CACHE_BUDGET_MB", "16");
+    set_env("GGML_CUDA_MOE_CACHE_ADMIT_AFTER", nullptr);
+    set_env("GGML_CUDA_MOE_CACHE_THROTTLE", "8");
+    set_env("GGML_CUDA_MOE_CACHE_STATS", "0");
     capture.clear();
 
     void * session = create_direct_session(cuda, cpu);
@@ -2362,6 +2365,7 @@ static bool run_exact_shape_inventory(
         ggml_row_size(GGML_TYPE_Q4_0, direct_n_in) * direct_n_out;
     std::vector<uint8_t> first(expert_size * first_n_expert);
     std::vector<uint8_t> second(expert_size * second_n_expert);
+    std::vector<uint8_t> late(expert_size);
 
     ggml_moe_cache.session_enter(session);
     (void)direct_begin_ready(
@@ -2379,12 +2383,37 @@ static bool run_exact_shape_inventory(
                 "blk.8.ffn_up_exps.weight", second.data(), expert_size,
                 direct_n_in, direct_n_out, GGML_TYPE_Q4_0, second_n_expert);
     }
+    const bool complete_first_miss = direct_plan_one(
+            "blk.7.ffn_up_exps.weight", first.data(), expert_size,
+            direct_n_in, direct_n_out, GGML_TYPE_Q4_0, first_n_expert, 0) == 0;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const bool complete_second_hit = direct_plan_one(
+            "blk.7.ffn_up_exps.weight", first.data(), expert_size,
+            direct_n_in, direct_n_out, GGML_TYPE_Q4_0, first_n_expert, 0) == 1;
+    const bool late_first_miss = direct_plan_one(
+            "blk.9.ffn_up_exps.weight", late.data(), expert_size,
+            direct_n_in, direct_n_out, GGML_TYPE_Q4_0, 1, 0) == 0;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const bool late_second_miss = direct_plan_one(
+            "blk.9.ffn_up_exps.weight", late.data(), expert_size,
+            direct_n_in, direct_n_out, GGML_TYPE_Q4_0, 1, 0) == 0;
+    bool late_hit = false;
+    for (int attempt = 0; attempt < 100 && !late_hit; attempt++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        late_hit = direct_plan_one(
+                "blk.9.ffn_up_exps.weight", late.data(), expert_size,
+                direct_n_in, direct_n_out, GGML_TYPE_Q4_0, 1, 0) == 1;
+    }
     ggml_moe_cache.session_leave(session);
     ggml_moe_cache.session_destroy(session);
 
     const std::string log = capture.get();
     const bool ok = ready &&
         max_field_value(log, "slots=") == first_n_expert + second_n_expert &&
+        log.find("entries=65 coverage=complete") != std::string::npos &&
+        log.find("admit=1-complete/2-partial/8-replace") != std::string::npos &&
+        complete_first_miss && complete_second_hit &&
+        late_first_miss && late_second_miss && late_hit &&
         log.find("fills=serial") != std::string::npos;
     if (!ok) {
         fprintf(stderr, "cache-shape-inventory: unexpected pool inventory\n%s",
