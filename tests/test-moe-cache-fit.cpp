@@ -61,6 +61,22 @@ int main() {
     }
 
     {
+        const std::vector<common_moe_cache_fit_device_input> devices = {
+            {0, 860, 12*(int64_t)MiB, 0},
+        };
+        const common_moe_cache_fit_result result = common_moe_cache_plan_fit(
+                devices, one_pool, 0, 0, 1, 8*MiB);
+        expect(result.feasible, "an automatic slab floor should be usable at its boundary");
+        expect(result.minimum_device_bytes == 8*MiB + MiB/4,
+                "the automatic slab floor should replace a smaller pool inventory");
+
+        std::vector<common_moe_cache_fit_device_input> below = devices;
+        below[0].free_bytes = (int64_t)result.minimum_device_bytes - 1;
+        expect(!common_moe_cache_plan_fit(below, one_pool, 0, 0, 1, 8*MiB).feasible,
+                "one byte below the automatic slab floor should be rejected");
+    }
+
+    {
         const std::vector<common_moe_cache_fit_device_input> aliases = {
             {7, 860, 10*(int64_t)MiB, 2*MiB},
             {7, 750, 10*(int64_t)MiB, 3*MiB},

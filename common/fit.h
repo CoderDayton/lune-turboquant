@@ -49,7 +49,8 @@ common_moe_cache_fit_result common_moe_cache_plan_fit(
         const std::vector<common_moe_cache_fit_shape_input> & shapes,
         size_t reserve_bytes,
         size_t budget_bytes,
-        int min_devices);
+        int min_devices,
+        size_t minimum_slab_bytes = 0);
 
 enum common_params_fit_status {
     COMMON_PARAMS_FIT_STATUS_SUCCESS = 0, // found allocations that are projected to fit

@@ -52,6 +52,7 @@ static constexpr size_t moe_cache_expert_bytes_pre_ampere_min = 1u << 20;
 static constexpr int    moe_cache_batch_auto_max              = 8;
 static constexpr int    moe_cache_batch_forced_max            = 1;
 static constexpr int    moe_cache_pool_slots_min              = 64;
+static constexpr size_t moe_cache_slab_bytes_auto_min         = 1ull << 30;
 static constexpr int    moe_cache_node_rows_max               = 64;
 static constexpr size_t moe_cache_overlap_bytes_per_token     = 8u << 20;
 
@@ -138,6 +139,7 @@ struct moe_cache_config {
     bool automatic = true;
     size_t budget_mb = 0;
     size_t reserve_mb = 3072;
+    size_t minimum_slab_bytes = moe_cache_slab_bytes_auto_min;
     size_t min_expert_bytes = moe_cache_expert_bytes_pre_ampere_min;
     bool min_expert_explicit = false;
     int max_batch = moe_cache_batch_forced_max;
@@ -247,6 +249,7 @@ struct moe_cache_session {
     std::condition_variable idle_cv;
     std::atomic<bool> stopping{false};
     std::atomic<bool> dormant{false};
+    std::atomic<bool> config_announced{false};
     std::atomic<bool> batch_bypass_announced{false};
     int active_scopes = 0;
     int active_nodes = 0;
@@ -504,6 +507,8 @@ static size_t moe_cache_default_min_expert_bytes(int compute_capability) {
 }
 
 static void moe_cache_apply_mode_defaults(moe_cache_config & config) {
+    config.minimum_slab_bytes = config.automatic
+        ? moe_cache_slab_bytes_auto_min : 0;
     if (!config.min_expert_explicit) {
         config.min_expert_bytes = config.automatic
             ? moe_cache_expert_bytes_ampere_min
@@ -897,6 +902,7 @@ static int moe_cache_query_config(
 
     result->budget_bytes = config.budget_mb << 20;
     result->reserve_bytes = config.reserve_mb << 20;
+    result->minimum_slab_bytes = config.minimum_slab_bytes;
     result->min_expert_bytes = config.min_expert_bytes;
     result->min_expert_explicit = config.min_expert_explicit;
     result->max_batch = config.max_batch;
@@ -1436,6 +1442,29 @@ static void moe_cache_log_stats(moe_cache_device & device) {
             device.fused_nodes);
 }
 
+static void moe_cache_log_configuration(moe_cache_session & session) {
+    bool expected = false;
+    if (!session.config_announced.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
+    const std::string budget = session.config.budget_mb > 0
+        ? std::to_string(session.config.budget_mb) + " MiB cap"
+        : "free-minus-reserve";
+    const std::string overlap_cpu_rows = session.config.overlap_cpu_rows < 0
+        ? "auto" : std::to_string(session.config.overlap_cpu_rows);
+    MOE_CACHE_LOG("[moe-cache] configured: mode=%s devices=%zu budget=%s reserve=%zu MiB min-slab=%zu MiB min-expert=%zu KiB max-batch=%d admit=%d/%d cpu-overlap=%s fills=%s\n",
+            session.config.automatic ? "auto" : "on",
+            session.devices.size(), budget.c_str(),
+            session.config.reserve_mb,
+            session.config.minimum_slab_bytes >> 20,
+            session.config.min_expert_bytes >> 10,
+            session.config.max_batch,
+            session.config.admit_after, session.config.readmit_after,
+            overlap_cpu_rows.c_str(),
+            session.config.serial_fill ? "serial" : "parallel");
+}
+
 static void * moe_cache_session_create(
         void * const * backends, int n_backends,
         const ggml_moe_cache_config * supplied_config) {
@@ -1445,6 +1474,7 @@ static void * moe_cache_session_create(
             constexpr size_t MiB = 1024 * 1024;
             if (supplied_config->budget_bytes % MiB != 0 ||
                 supplied_config->reserve_bytes % MiB != 0 ||
+                supplied_config->minimum_slab_bytes % MiB != 0 ||
                 supplied_config->min_expert_bytes == 0 ||
                 supplied_config->min_expert_explicit < 0 ||
                 supplied_config->min_expert_explicit > 1 ||
@@ -1461,6 +1491,7 @@ static void * moe_cache_session_create(
             config.automatic = supplied_config->min_devices > 1;
             config.budget_mb = supplied_config->budget_bytes / MiB;
             config.reserve_mb = supplied_config->reserve_bytes / MiB;
+            config.minimum_slab_bytes = supplied_config->minimum_slab_bytes;
             config.min_expert_bytes = supplied_config->min_expert_bytes;
             config.min_expert_explicit = supplied_config->min_expert_explicit;
             config.max_batch = supplied_config->max_batch;
@@ -1533,23 +1564,9 @@ static void * moe_cache_session_create(
             session->config.serial_fill =
                 session->devices.size() < 2 || minimum_capability < moe_cache_cc_ampere;
         }
-        const std::string budget = session->config.budget_mb > 0
-            ? std::to_string(session->config.budget_mb) + " MiB cap"
-            : "free-minus-reserve";
-        const std::string overlap_cpu_rows = session->config.overlap_cpu_rows < 0
-            ? "auto" : std::to_string(session->config.overlap_cpu_rows);
         if (!moe_cache_budget_register(*session)) {
             return nullptr;
         }
-        MOE_CACHE_LOG("[moe-cache] configured: mode=%s devices=%zu budget=%s reserve=%zu MiB min-expert=%zu KiB max-batch=%d admit=%d/%d cpu-overlap=%s fills=%s\n",
-                session->config.automatic ? "auto" : "on",
-                session->devices.size(), budget.c_str(),
-                session->config.reserve_mb,
-                session->config.min_expert_bytes >> 10,
-                session->config.max_batch,
-                session->config.admit_after, session->config.readmit_after,
-                overlap_cpu_rows.c_str(),
-                session->config.serial_fill ? "serial" : "parallel");
 
         moe_cache_session * result = session.get();
         try {
@@ -1781,7 +1798,11 @@ static void * moe_cache_begin(
         return nullptr;
     }
     moe_cache_session * session = g_session_stack.back().active;
-    if (!session || session->stopping || session->dormant || !name || !host_base ||
+    if (!session || session->stopping || session->dormant) {
+        return nullptr;
+    }
+    moe_cache_log_configuration(*session);
+    if (!name || !host_base ||
         !moe_cache_tensor_name_supported(name) || n_tokens < 1 ||
         expert_size < session->config.min_expert_bytes ||
         n_in <= 0 || n_out <= 0 || n_expert <= 0 ||
@@ -1823,6 +1844,7 @@ static void * moe_cache_begin(
         }
 
         int budget_devices = 0;
+        int slab_devices = 0;
         int eligible_devices = 0;
         const size_t minimum_pool = expert_size * moe_cache_pool_slots_min;
         for (const auto & device_ptr : session->devices) {
@@ -1837,12 +1859,21 @@ static void * moe_cache_begin(
             const size_t slab_limit =
                 candidate.budget_limit > reserved
                     ? candidate.budget_limit - reserved : 0;
-            if (slab_limit >= minimum_pool) {
+            if (slab_limit >= session->config.minimum_slab_bytes) {
+                slab_devices++;
+            }
+            if (slab_limit >= minimum_pool &&
+                slab_limit >= session->config.minimum_slab_bytes) {
                 eligible_devices++;
             }
         }
         if (budget_devices == 0 ||
-            (session->config.automatic && budget_devices < 2)) {
+            (session->config.automatic &&
+             (budget_devices < 2 || slab_devices < 2))) {
+            if (session->config.automatic && slab_devices < 2) {
+                MOE_CACHE_LOG("[moe-cache] dormant: only %d devices satisfy the %zu MiB automatic slab floor\n",
+                        slab_devices, session->config.minimum_slab_bytes >> 20);
+            }
             session->dormant.store(true);
             lock.unlock();
             for (const auto & device_ptr : session->devices) {
@@ -1863,7 +1894,8 @@ static void * moe_cache_begin(
             const size_t slab_limit =
                 candidate.budget_limit > reserved
                     ? candidate.budget_limit - reserved : 0;
-            if (candidate.allocated_bytes > slab_limit) {
+            if (candidate.allocated_bytes > slab_limit ||
+                slab_limit < session->config.minimum_slab_bytes) {
                 return 0;
             }
             if (moe_cache_find_pool(candidate, expert_size, wtype) >= 0) {
@@ -2627,8 +2659,11 @@ static void * moe_cache_fused_begin(
     }
 
     moe_cache_session * session = g_session_stack.back().active;
-    if (!session || session->stopping || session->dormant ||
-        up->expert_size < session->config.min_expert_bytes) {
+    if (!session || session->stopping || session->dormant) {
+        return nullptr;
+    }
+    moe_cache_log_configuration(*session);
+    if (up->expert_size < session->config.min_expert_bytes) {
         return nullptr;
     }
     if (n_tokens > session->config.max_batch) {

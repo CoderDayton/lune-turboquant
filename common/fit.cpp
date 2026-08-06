@@ -46,7 +46,8 @@ common_moe_cache_fit_result common_moe_cache_plan_fit(
         const std::vector<common_moe_cache_fit_shape_input> & shapes,
         size_t reserve_bytes,
         size_t budget_bytes,
-        int min_devices) {
+        int min_devices,
+        size_t minimum_slab_bytes) {
     common_moe_cache_fit_result result;
 
     for (const common_moe_cache_fit_device_input & input : device_inputs) {
@@ -139,17 +140,23 @@ common_moe_cache_fit_result common_moe_cache_plan_fit(
         return result;
     }
 
-    result.minimum_device_bytes = scratch_bytes;
+    size_t minimum_pool_bytes = 0;
     for (const common_moe_cache_fit_pool & pool : pools) {
         if (pool.tensor_bytes < pool.pool_bytes) {
             continue;
         }
-        if (pool.pool_bytes > SIZE_MAX - result.minimum_device_bytes) {
+        if (pool.pool_bytes > SIZE_MAX - minimum_pool_bytes) {
             result.reason = "the minimum cache pool inventory overflowed";
             return result;
         }
-        result.minimum_device_bytes += pool.pool_bytes;
+        minimum_pool_bytes += pool.pool_bytes;
     }
+    minimum_pool_bytes = std::max(minimum_pool_bytes, minimum_slab_bytes);
+    if (minimum_pool_bytes > SIZE_MAX - scratch_bytes) {
+        result.reason = "the minimum cache pool inventory overflowed";
+        return result;
+    }
+    result.minimum_device_bytes = scratch_bytes + minimum_pool_bytes;
 
     int useful_devices = 0;
     for (const common_moe_cache_fit_device & device : result.devices) {
@@ -242,7 +249,8 @@ static common_moe_cache_fit_result common_moe_cache_evaluate_fit(
     }
 
     return common_moe_cache_plan_fit(
-            device_inputs, shape_inputs, config.reserve_bytes, config.budget_bytes, config.min_devices);
+            device_inputs, shape_inputs, config.reserve_bytes, config.budget_bytes,
+            config.min_devices, config.minimum_slab_bytes);
 }
 
 struct common_fit_logger_guard {

@@ -12,6 +12,7 @@ extern "C" {
 struct ggml_moe_cache_config {
     size_t budget_bytes;
     size_t reserve_bytes;
+    size_t minimum_slab_bytes;
     size_t min_expert_bytes;
     // 0 lets each selected device raise or lower the admission floor.
     int32_t min_expert_explicit;

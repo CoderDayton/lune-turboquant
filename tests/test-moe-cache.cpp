@@ -411,6 +411,7 @@ static bool run_capability_queries(
     ok &= config.min_devices == 2;
     ok &= config.budget_bytes == 4u * 1024 * 1024;
     ok &= config.reserve_bytes == 0;
+    ok &= config.minimum_slab_bytes == 1024u * 1024 * 1024;
     ok &= config.min_expert_bytes == 1024;
     ok &= config.min_expert_explicit == 1;
     ok &= config.overlap_cpu_rows == 0;
@@ -452,6 +453,7 @@ static bool run_capability_queries(
     set_env("GGML_CUDA_MOE_CACHE_OVERLAP_CPU_ROWS", nullptr);
     ok &= ggml_moe_cache.query_config(1, 0, &config) == 1;
     ok &= config.min_devices == 2;
+    ok &= config.minimum_slab_bytes == 1024u * 1024 * 1024;
     ok &= config.min_compute_capability == 800;
     ok &= config.min_expert_bytes == 512u * 1024;
     ok &= config.min_expert_explicit == 0;
@@ -462,6 +464,7 @@ static bool run_capability_queries(
 
     ok &= ggml_moe_cache.query_config(0, 0, &config) == 1;
     ok &= config.min_devices == 1;
+    ok &= config.minimum_slab_bytes == 0;
     ok &= config.min_compute_capability == 700;
     ok &= config.min_expert_bytes == 1024u * 1024;
     ok &= config.min_expert_explicit == 0;
@@ -2624,10 +2627,31 @@ static bool run_route_override(
     const bool expect_parallel = queried && first_caps.compute_capability >= 800 &&
         second_caps.compute_capability >= 800;
     ggml_moe_cache.session_destroy(session);
-    ggml_backend_free(second_cuda);
     const bool fill_policy = capture.get().find(
             expect_parallel ? "fills=parallel" : "fills=serial") != std::string::npos;
-    const bool ok = shape_a_ready && shape_b_ready && queried && fill_policy;
+
+    ggml_moe_cache_config automatic = {};
+    capture.clear();
+    const bool automatic_queried =
+        ggml_moe_cache.query_config(1, 4, &automatic);
+    void * dormant = automatic_queried
+        ? ggml_moe_cache.session_create(backends, 3, &automatic) : nullptr;
+    const bool dormant_created = dormant != nullptr;
+    bool dormant_begin = false;
+    if (dormant) {
+        ggml_moe_cache.session_enter(dormant);
+        dormant_begin = direct_begin_ready(
+                "blk.4.ffn_up_exps.weight", shape_a.data(), shape_a_expert,
+                shape_a_in, shape_a_out, GGML_TYPE_Q4_0, shape_experts);
+        ggml_moe_cache.session_leave(dormant);
+        ggml_moe_cache.session_destroy(dormant);
+    }
+    const bool slab_floor = dormant_created && !dormant_begin &&
+        capture.get().find("automatic slab floor") != std::string::npos;
+    ggml_backend_free(second_cuda);
+
+    const bool ok = shape_a_ready && shape_b_ready && queried && fill_policy &&
+        automatic_queried && slab_floor;
     printf("cache-route-override: %s\n", ok ? "OK" : "FAIL");
     return ok;
 }

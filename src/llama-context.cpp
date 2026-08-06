@@ -637,6 +637,13 @@ static bool llama_model_has_cacheable_moe_weights(
         if (ggml_moe_cache.query_shape(
                     tensor->type, tensor->ne[0], tensor->ne[1], tensor->ne[2],
                     tensor->nb[2], &shape)) {
+            const size_t slab_bytes = std::max(
+                    shape.pool_bytes, config.minimum_slab_bytes);
+            if (config.budget_bytes > 0 &&
+                (shape.scratch_bytes > config.budget_bytes ||
+                 slab_bytes > config.budget_bytes - shape.scratch_bytes)) {
+                continue;
+            }
             return true;
         }
     }
@@ -666,11 +673,21 @@ void llama_context::sched_reserve() {
     gf_res_prev.reset(new llm_graph_result(max_nodes));
     gf_res_reserve.reset(new llm_graph_result(max_nodes));
 
-    const ggml_moe_cache_mode moe_cache_mode = llama_model_has_cacheable_moe_weights(
+    const bool moe_cache_eligible = llama_model_has_cacheable_moe_weights(
             model, (llama_moe_cache_mode)cparams.moe_cache_mode,
-            cparams.moe_cache_budget_mib, backend_ptrs)
-        ? (ggml_moe_cache_mode)cparams.moe_cache_mode
-        : GGML_MOE_CACHE_MODE_OFF;
+            cparams.moe_cache_budget_mib, backend_ptrs);
+    const ggml_moe_cache_mode moe_cache_mode = moe_cache_eligible
+        ? (ggml_moe_cache_mode)cparams.moe_cache_mode : GGML_MOE_CACHE_MODE_OFF;
+    const char * moe_cache_requested = "provider";
+    switch (cparams.moe_cache_mode) {
+        case LLAMA_MOE_CACHE_MODE_OFF:  moe_cache_requested = "off";  break;
+        case LLAMA_MOE_CACHE_MODE_AUTO: moe_cache_requested = "auto"; break;
+        case LLAMA_MOE_CACHE_MODE_ON:   moe_cache_requested = "on";   break;
+        case LLAMA_MOE_CACHE_MODE_UNSPECIFIED: break;
+    }
+    LLAMA_LOG_INFO("%s: MoE cache requested=%s resolved=%s\n",
+            __func__, moe_cache_requested,
+            moe_cache_eligible ? moe_cache_requested : "off");
 
     sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, cparams.pipeline_parallel, cparams.op_offload));
     ggml_backend_sched_set_moe_cache(
