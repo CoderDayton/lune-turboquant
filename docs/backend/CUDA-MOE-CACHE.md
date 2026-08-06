@@ -99,6 +99,8 @@ Putting all dense weights on the first GPU remained faster than an equal four-de
 
 Quality checks used the actual target GGUF, not only synthetic tensors. Perplexity over four 512-token chunks was `2.7996 +/- 0.19833` with the cache off and `2.7987 +/- 0.19824` with it on. On the final accounting code, a 54,044-token retrieval prompt returned all three exact codes placed near the beginning, middle, and end. A same-session follow-up evaluated only 18 new prompt tokens, returned the correct middle code, and remained coherent. These results show statistical quality equivalence on the tested workload, not bit-identical execution.
 
+A target-only workload-shift check used eight unrelated prompts covering algorithms, C++ code, algebra, science, history, SQL, networking, and key rotation. The first cycle generated 1,943 tokens at a weighted 26.425 t/s; the identical prompt sequence generated 1,938 tokens at 26.408 t/s on the second cycle, a 0.06% difference. The first cold request ran at 24.99 t/s, while the remaining first-cycle requests ranged from 25.86 to 27.11 t/s. All responses were coherent, and both rounding-divergent algebra responses independently solved and verified `x = 14`. Teardown reported 85.3% to 86.5% residency-probe hits and zero cache failures. This shows quick convergence under one mixed serial workload, not a universal working-set guarantee.
+
 Measure this model with three separate `llama-bench` arms and otherwise identical placement, context, batch, thread, and warmup settings:
 
 1. `--moe-cache off --repack on`: optimized CPU-expert baseline.
