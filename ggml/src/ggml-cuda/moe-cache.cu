@@ -1908,7 +1908,7 @@ static void * moe_cache_begin(
             (session->config.automatic &&
              (budget_devices < 2 || slab_devices < 2))) {
             if (session->config.automatic && slab_devices < 2) {
-                MOE_CACHE_LOG("[moe-cache] dormant: only %d devices satisfy the %zu MiB automatic slab floor\n",
+                MOE_CACHE_LOG("[moe-cache] session dormant: only %d devices satisfy the %zu MiB automatic slab floor\n",
                         slab_devices, session->config.minimum_slab_bytes >> 20);
             }
             session->dormant.store(true);
