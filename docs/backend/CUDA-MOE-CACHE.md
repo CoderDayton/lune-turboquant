@@ -30,7 +30,7 @@ With default settings, a node must satisfy all of these conditions:
 - The weight type is supported by the CUDA quantized matvec kernel.
 - One expert meets the selected devices' effective size floor. The default is 64 KiB when every selected device is compute capability 8.0 or newer and 1 MiB otherwise. An explicit threshold remains authoritative.
 - The graph node contains no more than the configured maximum token batch and no more than 64 routed rows. The default maximum is eight tokens in `auto` and one token in forced modes.
-- The selected device can hold a pool of at least 64 experts of that shape.
+- The selected device can hold a pool of at least 64 experts of that shape. Entries are aggregated across same-shape tensors, so an individual tensor may contain fewer than 64 experts.
 
 Each physical device budget is coordinated across every target, draft, MTP, and server scheduler in the process. It is claimed once, at first eligible use. Shape inventory counts the exact number of experts in every observed tensor; mixed expert counts do not reserve nonexistent slots. Device reservations are tracked per participating session, so releasing a high-reserve target immediately restores the correct capacity for the remaining sessions. The automatic budget is:
 
@@ -150,10 +150,10 @@ These matched canonical-weight decode checks force routed experts to CPU memory.
 | Qwen3-30B-A3B Q4_K_XL | 71.93 t/s | 73.43 t/s | +2.1% |
 | Qwen3.6-35B-A3B Q4_K_XL | 77.60 t/s | 84.04 t/s | +8.3% |
 | DeepSeek-V2-Lite Q4_K_M | 65.04 t/s | 81.61 t/s | +25.5% |
-| Llama-4 Scout Q4_K_XL | 25.88 t/s | 45.03 t/s historical | +74.0% historical |
+| Llama-4 Scout Q4_K_XL | 25.97 t/s | 33.54 t/s | +29.2% |
 | MiniMax M2.7 IQ2_XXS | 37.76 t/s | 47.81 t/s | +26.6% |
 
-The updated hardware-aware threshold made the Qwen3.6 experts eligible on four RTX 3090 devices. Its row uses 512 warmup and 512 measured generation tokens with canonical CPU experts in both arms. A fixed 4096 MiB cache reached 83.89 t/s in the same run. The Llama-4 result predates the current per-tensor 64-expert eligibility check. The real model has 16 experts per tensor, and the current fixed-cache control remained dormant at `25.927 +/- 0.028` t/s even though its shared shape has enough aggregate entries for a pool. That eligibility regression is tracked separately; do not treat 45.03 t/s as a current-branch result until it is rerun. This matrix is evidence for the tested hardware, not a guarantee that every eligible GPU and model will improve.
+The updated hardware-aware threshold made the Qwen3.6 experts eligible on four RTX 3090 devices. Its row uses 512 warmup and 512 measured generation tokens with canonical CPU experts in both arms. A fixed 4096 MiB cache reached 83.89 t/s in the same run. Llama-4 has only 16 experts per tensor, but 48 layers contribute enough entries to its shared-shape pool. Aggregating those entries instead of applying the 64-slot floor to each tensor restored cache eligibility. With 512 warmup and 512 measured generation tokens, five same-binary samples reached `25.966 +/- 0.006` t/s off and `33.541 +/- 0.320` t/s with a fixed 4096 MiB cache. The older branch reached 45.03 t/s under a different cache budget and protocol, so it is retained only in the private historical ledger. This matrix is evidence for the tested hardware, not a guarantee that every eligible GPU and model will improve.
 
 The real OLMoE model also exercised the available quant families from Q2_K through Q8_0 with the automatic 64 KiB admission floor. The matched off versus fixed 4096 MiB results were 251.54 versus 263.34 t/s for Q2_K, 215.12 versus 257.65 t/s for Q3_K_M, 200.12 versus 265.97 t/s for Q4_0, 173.49 versus 256.55 t/s for Q5_K_M, 157.75 versus 236.78 t/s for Q6_K, and 130.60 versus 224.03 t/s for Q8_0. F16 remained dormant because that cache matvec type is unsupported and preserved parity at 74.43 versus 74.78 t/s. A fully resident Qwen3.6-35B control preserved repacking and remained dormant at 144.80 t/s off versus 144.68 t/s auto.
 

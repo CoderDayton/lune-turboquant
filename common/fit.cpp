@@ -37,6 +37,8 @@ struct common_moe_cache_fit_pool {
     ggml_type type = GGML_TYPE_COUNT;
     size_t expert_size = 0;
     size_t pool_bytes = 0;
+    size_t tensor_bytes = 0;
+    size_t scratch_bytes = 0;
 };
 
 common_moe_cache_fit_result common_moe_cache_plan_fit(
@@ -94,8 +96,6 @@ common_moe_cache_fit_result common_moe_cache_plan_fit(
     }
 
     std::vector<common_moe_cache_fit_pool> pools;
-    size_t scratch_bytes = 0;
-    size_t supported_bytes = 0;
     for (const common_moe_cache_fit_shape_input & shape : shapes) {
         if (shape.tensor_bytes == 0 || shape.tensor_bytes > SIZE_MAX - result.expert_bytes) {
             result.reason = "the routed expert tensor inventory overflowed";
@@ -105,24 +105,30 @@ common_moe_cache_fit_result common_moe_cache_plan_fit(
         if (!shape.cacheable) {
             continue;
         }
-        if (shape.tensor_bytes > SIZE_MAX - supported_bytes) {
-            result.reason = "the supported expert tensor inventory overflowed";
-            return result;
-        }
-        supported_bytes += shape.tensor_bytes;
-        scratch_bytes = std::max(scratch_bytes, shape.scratch_bytes);
-
         bool found = false;
         for (common_moe_cache_fit_pool & pool : pools) {
             if (pool.type == shape.type && pool.expert_size == shape.expert_size) {
                 pool.pool_bytes = std::max(pool.pool_bytes, shape.pool_bytes);
+                pool.tensor_bytes += shape.tensor_bytes;
+                pool.scratch_bytes = std::max(pool.scratch_bytes, shape.scratch_bytes);
                 found = true;
                 break;
             }
         }
         if (!found) {
-            pools.push_back({shape.type, shape.expert_size, shape.pool_bytes});
+            pools.push_back({shape.type, shape.expert_size, shape.pool_bytes,
+                    shape.tensor_bytes, shape.scratch_bytes});
         }
+    }
+
+    size_t scratch_bytes = 0;
+    size_t supported_bytes = 0;
+    for (const common_moe_cache_fit_pool & pool : pools) {
+        if (pool.tensor_bytes < pool.pool_bytes) {
+            continue;
+        }
+        supported_bytes += pool.tensor_bytes;
+        scratch_bytes = std::max(scratch_bytes, pool.scratch_bytes);
     }
     if (supported_bytes == 0) {
         result.reason = "no routed expert shape is cacheable";
@@ -135,6 +141,9 @@ common_moe_cache_fit_result common_moe_cache_plan_fit(
 
     result.minimum_device_bytes = scratch_bytes;
     for (const common_moe_cache_fit_pool & pool : pools) {
+        if (pool.tensor_bytes < pool.pool_bytes) {
+            continue;
+        }
         if (pool.pool_bytes > SIZE_MAX - result.minimum_device_bytes) {
             result.reason = "the minimum cache pool inventory overflowed";
             return result;

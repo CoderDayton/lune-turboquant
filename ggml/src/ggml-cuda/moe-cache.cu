@@ -949,7 +949,7 @@ static int moe_cache_query_shape(
         int wtype, int64_t n_in, int64_t n_out, int64_t n_expert,
         size_t expert_size,
         ggml_moe_cache_shape_caps * result) {
-    if (!result || n_in <= 0 || n_out <= 0 || n_expert < moe_cache_pool_slots_min ||
+    if (!result || n_in <= 0 || n_out <= 0 || n_expert <= 0 ||
         !moe_cache_type_supported((ggml_type)wtype)) {
         return 0;
     }
@@ -1784,7 +1784,7 @@ static void * moe_cache_begin(
     if (!session || session->stopping || session->dormant || !name || !host_base ||
         !moe_cache_tensor_name_supported(name) || n_tokens < 1 ||
         expert_size < session->config.min_expert_bytes ||
-        n_in <= 0 || n_out <= 0 || n_expert < moe_cache_pool_slots_min ||
+        n_in <= 0 || n_out <= 0 || n_expert <= 0 ||
         !moe_cache_type_supported((ggml_type)wtype)) {
         return nullptr;
     }
@@ -2615,7 +2615,7 @@ static void * moe_cache_fused_begin(
         up->n_in != gate->n_in || up->n_out != gate->n_out ||
         up->n_expert != gate->n_expert || up->type != gate->type ||
         up->n_in <= 0 || up->n_out <= 0 ||
-        up->n_expert < moe_cache_pool_slots_min ||
+        up->n_expert <= 0 ||
         up->type == GGML_TYPE_NVFP4 ||
         !moe_cache_type_supported((ggml_type)up->type)) {
         return nullptr;

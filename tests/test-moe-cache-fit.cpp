@@ -98,6 +98,27 @@ int main() {
 
     {
         const std::vector<common_moe_cache_fit_device_input> devices = {
+            {0, 860, 128*(int64_t)MiB, 0},
+        };
+        const std::vector<common_moe_cache_fit_shape_input> aggregated = {
+            shape(GGML_TYPE_Q4_0, MiB, 16*MiB, MiB/4, 64*MiB),
+            shape(GGML_TYPE_Q4_0, MiB, 49*MiB, MiB/2, 64*MiB),
+        };
+        const common_moe_cache_fit_result result = common_moe_cache_plan_fit(
+                devices, aggregated, 0, 0, 1);
+        expect(result.feasible, "small tensors should satisfy a shared pool floor in aggregate");
+        expect(result.minimum_device_bytes == 64*MiB + MiB/2,
+                "an aggregate pool should retain its largest scratch requirement");
+
+        const std::vector<common_moe_cache_fit_shape_input> underfilled = {
+            aggregated.front(),
+        };
+        expect(!common_moe_cache_plan_fit(devices, underfilled, 0, 0, 1).feasible,
+                "a shape with too few aggregate entries should remain ineligible");
+    }
+
+    {
+        const std::vector<common_moe_cache_fit_device_input> devices = {
             {0, 860, 16*(int64_t)MiB, MiB},
         };
         const std::vector<common_moe_cache_fit_shape_input> tensor_overflow = {

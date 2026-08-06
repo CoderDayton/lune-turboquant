@@ -434,9 +434,10 @@ static bool run_capability_queries(
     ok &= ggml_moe_cache.query_shape(
             GGML_TYPE_Q4_0, n_in, n_out, 64, expert_size - 1, &shape) == 0;
     ok &= ggml_moe_cache.query_shape(
-            GGML_TYPE_Q4_0, n_in, n_out, 63, expert_size, &shape) == 0;
+            GGML_TYPE_Q4_0, n_in, n_out, 1, expert_size, &shape) == 1;
+    ok &= shape.pool_bytes == expert_size * 64;
     ok &= ggml_moe_cache.query_shape(
-            GGML_TYPE_Q4_0, n_in, n_out, 65, expert_size, &shape) == 1;
+            GGML_TYPE_Q4_0, n_in, n_out, 0, expert_size, &shape) == 0;
 
     set_env("GGML_CUDA_MOE_CACHE", "0");
     set_env("GGML_CUDA_MOE_CACHE_MODE", "off");
@@ -2351,8 +2352,8 @@ static bool run_exact_shape_inventory(
 
     constexpr int64_t direct_n_in = 256;
     constexpr int64_t direct_n_out = 128;
-    constexpr int64_t first_n_expert = 64;
-    constexpr int64_t second_n_expert = 65;
+    constexpr int64_t first_n_expert = 16;
+    constexpr int64_t second_n_expert = 49;
     const size_t expert_size =
         ggml_row_size(GGML_TYPE_Q4_0, direct_n_in) * direct_n_out;
     std::vector<uint8_t> first(expert_size * first_n_expert);
