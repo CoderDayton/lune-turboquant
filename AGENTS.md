@@ -56,6 +56,26 @@ Any combination of `f16`/`q8_0`/`turbo2`/`turbo3`/`turbo4` for K and V is suppor
 - `test-backend-ops` - full sweep on CPU + CUDA0 (23k+ cases on the RTX 5090 dev box)
 - `llama-bench` with `-ctk/-ctv turboN`; type parser accepts `tq3_1s`/`tq4_1s`
 
+### What the test gates do and do not cover
+
+What each suite does:
+
+- `test-turbo-quant` - CPU codec round-trip quality: quantize -> dequantize -> CPU inverse WHT, MSE/cosine on fixed vectors, plus a chunked-dequant invariance check for all five turbo types at row lengths straddling the vec_dot chunk size. No GGML graphs, no backend kernels.
+- `test-quantize-fns` - CPU quantize/dequantize functions against error budgets, including TQ3_1S/TQ4_1S. Skips TURBO2_0/3_0/4_0 by design: their dequant output stays in the WHT-rotated domain.
+- `test-backend-ops` - per-op GGML graphs, run on each backend and compared numerically against the CPU reference. This is the only gate that exercises backend kernels.
+- `llama-bench` - tokens/s on real models. Timing only; it never checks output correctness.
+
+Coverage limits (each caused a real miss):
+
+- `test-backend-ops` reports `Backend ...: OK` even when every case was skipped: the backend verdict is `n_ok == tests_run`, and 0/0 passes. See issue #242 (open). This is how the turbo3 wave64 ballot bug in `copy_to_quant.comp` shipped: FLASH_ATTN_EXT (read path) passed, SET_ROWS (write path) was silently skipped on GCN4, and the corrupted V cache was released (#241, fixed in #243).
+- The generic SET_ROWS sweep has a view variant with `r/2` rows. At r=1 that is 0 rows: the case writes nothing and passes for every type in `all_types`, including TQ4_1S.
+- The MUL_MAT_ID sweep used n=16 only, and the mat-vec decode path is selected only when `src2->ne[1] <= 8` (`ggml_vk_use_mul_mat_vec_id`). n=16 exercises mul_mm_id only; MoE decode was never touched. The n=1 cases and the DSv4-shaped sweep (commit 637300387, PR #269) now cover both sides of that threshold.
+
+A green run means the cases that ran passed, not that your change was exercised. Check that your cases actually ran:
+
+- `-o` filters on the op name from `ggml_op_desc` (e.g. SET_ROWS). The dedicated turbo write tests have their own names (SET_ROWS_TURBO3, SET_ROWS_TURBO4, SET_ROWS_TQ4_1S); filter with those, or they never run.
+- Watch for `not supported [backend]` lines and `0/0 tests passed`.
+
 ### Git workflow
 
 - Remotes: `origin` = TheTom/llama-cpp-turboquant (this repo); the fork remote tracks the upstream TurboQuant fork (same repo, two names); add `upstream` = ggml-org/llama.cpp when syncing
