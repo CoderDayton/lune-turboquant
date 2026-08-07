@@ -628,6 +628,40 @@ void matmul_shaders(bool fp16, MatMulIdType matmul_id_type, bool coopmat, bool c
         }
 #endif
     }
+
+    // TurboQuant weight types, ROTATED matmul.
+    //
+    // Generated explicitly rather than by adding them to type_names, for the
+    // same reasons as the mat-vec kernels: that loop would also emit q8_1 mmq
+    // variants (no integer-dot path exists for these types) and pull them into
+    // paths that have no TQ support.
+    //
+    // The A side loads centroid*scale WITHOUT the inverse WHT, so these are only
+    // correct against an activation pre-rotated by tq_rotate_act.comp. The host
+    // must not dispatch them otherwise.
+    //
+    // coopmat2 is excluded: TQ has no dequant_funcs_cm2.glsl entry, and the
+    // target (gfx1151) exposes KHR_coopmat only. LOAD_VEC_A is pinned to 8
+    // because the A-side block indexes idx/4 and idx&3 to map one invocation
+    // onto exactly one 3-byte packing group of 8 contiguous elements.
+    if (!coopmat2) {
+        for (const auto& tname : {std::string("tq3_1s"), std::string("tq4_1s")}) {
+            const std::string data_a_key = "DATA_A_" + to_uppercase(tname);
+            // Must carry FLOAT_TYPEV8 as well: load_b_to_shmem() references it
+            // whenever LOAD_VEC_B is 8, which it is on the fp16 path.
+            const std::map<std::string, std::string> float_type_dict = {
+                {"FLOAT_TYPE",   FLOAT_TYPE(1, tname)},
+                {"FLOAT_TYPEV2", FLOAT_TYPE(2, tname)},
+                {"FLOAT_TYPEV4", FLOAT_TYPE(4, tname)},
+                {"FLOAT_TYPEV8", FLOAT_TYPE(8, tname)},
+            };
+
+            string_to_spv(shader_name + "_" + tname + "_f32" + dot2_sfx, "mul_mm.comp",
+                merge_maps(merge_maps(base_dict, float_type_dict), {{data_a_key, "1"}, {"LOAD_VEC_A", "8"}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f32}, {"B_TYPE_SCALAR", "float"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
+            string_to_spv(shader_name + "_" + tname + "_f16" + dot2_sfx, "mul_mm.comp",
+                merge_maps(merge_maps(base_dict, float_type_dict), {{data_a_key, "1"}, {"LOAD_VEC_A", "8"}, {"LOAD_VEC_B", load_vec}, {"B_TYPE", aligned_b_type_f16}, {"B_TYPE_SCALAR", "float16_t"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}}), fp16, coopmat, coopmat2, f16acc);
+        }
+    }
 }
 
 void process_shaders() {
@@ -927,6 +961,12 @@ void process_shaders() {
         merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {"DATA_A_TQ3_1S", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
     string_to_spv("dequant_tq3_1s", "dequant_tq3_1s.comp",
         merge_maps(base_dict, {{"DATA_A_TQ3_1S", "1"}, {"D_TYPE", "float16_t"}}));
+
+    // Activation pre-rotation for the rotated matmul path. Type-independent:
+    // TQ3 and TQ4 share the same 32-element sign pattern and butterfly, so one
+    // pipeline serves both. Takes no DATA_A_* define -- it only touches the
+    // activation.
+    string_to_spv("tq_rotate_act", "tq_rotate_act.comp", {});
 
     auto get_type_str = [](bool f16) {
         return f16 ? "float16_t" : "float";
