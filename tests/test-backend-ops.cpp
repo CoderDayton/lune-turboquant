@@ -129,7 +129,24 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
                 }
             }
         }
-        ggml_backend_tensor_set(tensor, dataq.data(), 0, dataq.size());
+        // A non-contiguous tensor (e.g. a k_v view whose rows are strided over a
+        // wider base) must be written row by row. ggml_backend_tensor_set copies
+        // `size` bytes contiguously from tensor->data, so a single packed write
+        // lays row i at i*row_size instead of i*nb[1], leaving the tail of the
+        // logical extent holding whatever was there before.
+        if (!ggml_is_contiguous(tensor) && ggml_n_dims(tensor) >= 2) {
+            const size_t row_sz = ggml_row_size(tensor->type, tensor->ne[0]);
+            const int64_t nrows = ggml_nrows(tensor);
+            for (int64_t r = 0; r < nrows; r++) {
+                const int64_t i3 =  r / (tensor->ne[1]*tensor->ne[2]);
+                const int64_t i2 = (r / tensor->ne[1]) % tensor->ne[2];
+                const int64_t i1 =  r % tensor->ne[1];
+                const size_t off = i1*tensor->nb[1] + i2*tensor->nb[2] + i3*tensor->nb[3];
+                ggml_backend_tensor_set(tensor, dataq.data() + r*row_sz, off, row_sz);
+            }
+        } else {
+            ggml_backend_tensor_set(tensor, dataq.data(), 0, dataq.size());
+        }
     } else if (tensor->type == GGML_TYPE_I8 || tensor->type == GGML_TYPE_I16) {
         // This is going to create some weird integers though.
         ggml_backend_tensor_set(tensor, data.data(), 0, nels * ggml_type_size(tensor->type));
