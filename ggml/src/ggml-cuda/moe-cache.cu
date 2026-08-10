@@ -1,13 +1,13 @@
 #include "moe-cache.cuh"
 
-#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+#if defined(GGML_USE_MUSA)
 
 extern "C" size_t ggml_moe_cache_trim(int device) {
     (void) device;
     return 0;
 }
 
-void ggml_moe_cache_register(const void * owner) {
+static void ggml_moe_cache_register(const void * owner) {
     (void) owner;
 }
 
@@ -1558,20 +1558,12 @@ static void * moe_cache_session_create(
                 continue;
             }
 
-            cudaDeviceProp properties;
             ggml_cuda_set_device(logical);
-            cudaError_t error = cudaGetDeviceProperties(&properties, logical);
-            if (error != cudaSuccess) {
-                (void)cudaGetLastError();
-                MOE_CACHE_LOG("[moe-cache] CUDA%d skipped: device query failed\n", physical);
-                continue;
-            }
-            const int capability = properties.major * 100 + properties.minor * 10;
+            const int capability = info.devices[logical].cc;
             if (capability < session->config.min_compute_capability) {
-                MOE_CACHE_LOG("[moe-cache] CUDA%d skipped: compute capability %d.%d is below %d.%d\n",
-                        physical, properties.major, properties.minor,
-                        session->config.min_compute_capability / 100,
-                        (session->config.min_compute_capability % 100) / 10);
+                MOE_CACHE_LOG("[moe-cache] CUDA%d skipped: compute capability %d is below %d\n",
+                        physical, capability,
+                        session->config.min_compute_capability);
                 continue;
             }
 
@@ -3121,7 +3113,7 @@ extern "C" size_t ggml_moe_cache_trim(int device) {
     return freed;
 }
 
-void ggml_moe_cache_register(const void * owner) {
+static void ggml_moe_cache_register(const void * owner) {
     if (ggml_moe_cache.owner && ggml_moe_cache.owner != owner) {
         return;
     }
@@ -3143,3 +3135,7 @@ void ggml_moe_cache_register(const void * owner) {
 }
 
 #endif
+
+void ggml_cuda_moe_cache_register(void * reg) {
+    ggml_moe_cache_register(reg);
+}
