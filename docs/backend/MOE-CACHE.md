@@ -2,7 +2,7 @@
 
 The MoE expert cache accelerates decode for Mixture-of-Experts (MoE) models when routed expert weights remain in host (CPU) memory. A cache hit runs the selected expert matvec on the GPU while the CPU computes the miss rows through the normal `MUL_MAT_ID` kernel. Exact gate/up/SwiGLU subgraphs can fuse rows resident in both weight tensors while half-resident and missing rows stay on the stock CPU path. The cache belongs to one backend scheduler and persists until that scheduler is destroyed.
 
-This is an opportunistic path. Unsupported nodes, unavailable cache capacity, contention, and cache failures fall back to CPU execution. The same provider interface is implemented by the CUDA, Metal, and Vulkan backends; the detailed controls documented here are read by each backend when it creates its cache session.
+This is an opportunistic path. Unsupported nodes, unavailable cache capacity, contention, and cache failures fall back to CPU execution. The same provider interface is implemented by the CUDA, Metal, and Vulkan backends (HIP builds share the CUDA implementation); the detailed controls documented here are read by each backend when it creates its cache session.
 
 ## What is it for
 
@@ -64,9 +64,10 @@ Use `--moe-cache MODE` with programs that use the common argument parser:
 | `auto` | Free VRAM minus the reserve | Preserved unless cache-aware fit selects canonical CPU experts | At least one eligible selected CUDA device that clears the 1 GiB automatic slab floor, compute capability 8.0 or newer |
 | `on` | Free VRAM minus the reserve | Disabled | At least one eligible selected CUDA device, compute capability 7.0 or newer |
 | `N` | At most `N` MiB per device, after the reserve | Disabled | Same as `on` |
+| `soft` | Fit first tries spare VRAM with stock placement, evicting experts only as needed | Preserved unless cache-aware fit selects canonical CPU experts | Same as `on` |
 | `off` or `0` | No cache session | Preserved unless changed separately | None |
 
-`auto` is the default. When the complete model fits, or dense weights do not fit without routed experts, normal placement and repacking are preserved. When routed experts must spill and a cache is feasible, cache-aware fit keeps canonical expert weights in host memory, puts all dense layers on the main GPU when possible, and preserves the remaining VRAM for cache pools. Use `on` or a positive budget to force canonical CPU weights when automatic placement is not wanted.
+`auto` is the default. When the complete model fits, or dense weights do not fit without routed experts, normal placement and repacking are preserved. When routed experts must spill and a cache is feasible, cache-aware fit keeps canonical expert weights in host memory, puts all dense layers on the main GPU when possible, and preserves the remaining VRAM for cache pools. Use `on` or a positive budget to force canonical CPU weights when automatic placement is not wanted. `soft` is like `on` with a gentler fit: it first tries to keep stock placement and fit the cache into spare VRAM, evicting experts only as needed. Compute capability floors are evaluated by CUDA and HIP devices; the Metal and Vulkan providers always report Ampere-class capability (800).
 
 A single device is eligible for `auto` when free VRAM minus the reserve clears the 1 GiB automatic slab floor. Below that floor `auto` stays dormant so small pools do not thrash; shrink `GGML_CUDA_MOE_CACHE_RESERVE_MB` (default 3072 MiB) to give the floor room on a constrained card.
 
@@ -79,7 +80,7 @@ The cache considers only backends selected for the scheduler. It does not discov
 With default settings, a node must satisfy all of these conditions:
 
 - The operation is the regular CPU `MUL_MAT_ID` path with F32 activations, optionally in an exact supported gate/up/SwiGLU subgraph.
-- The weight tensor name contains `_exps`.
+- The weight tensor name contains `_exps` or `_chexps`.
 - The weight type is supported by the backend quantized matvec kernel.
 - One expert meets the selected devices' effective size floor. The default is 512 KiB when every selected device is compute capability 8.0 or newer and 1 MiB otherwise. An explicit threshold remains authoritative.
 - The graph node contains no more than the configured maximum token batch and no more than 64 routed rows. The default maximum is eight tokens in every active mode.
@@ -302,7 +303,7 @@ An `off` versus `on` comparison without `--repack off` includes the intended rep
 
 ## Current limitations
 
-- The CUDA, HIP, MUSA, Metal, and Vulkan implementations cover the listed backends; other backends do not register a provider.
+- The CUDA, HIP, Metal, and Vulkan backends register a provider (HIP builds share the CUDA implementation). MUSA builds compile the CUDA source to stubs and do not provide the cache. Other backends do not register a provider.
 - CPU-resident expert `MUL_MAT_ID` only. Exact gate/up/SwiGLU graphs, including DeepSeek's per-input clamps, can fuse for up to the configured token batch and 64 flattened routed rows. Other GLU graphs use the stock path. There is no GPU-resident output handoff.
 - Demand fill only. There is no predictive prefetch or separate prompt-time population path.
 - No hot-set file or persistence across scheduler sessions or process restarts.
