@@ -82,6 +82,7 @@ test parameters:
   -ot --override-tensor <tensor name pattern>=<buffer type>;...
                                             (default: disabled)
   -nopo, --no-op-offload <0|1>              (default: 0)
+  -pw, --prefetch-weights <0|1>             (default: 0)
   --no-host <0|1>                           (default: 0)
 
 Multiple values can be given for each parameter by separating them with ','
