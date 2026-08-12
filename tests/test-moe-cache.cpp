@@ -321,7 +321,8 @@ static ggml_backend_dev_t find_cuda_device() {
     for (size_t index = 0; index < ggml_backend_dev_count(); index++) {
         ggml_backend_dev_t device = ggml_backend_dev_get(index);
         ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(device);
-        if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+        if ((ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU ||
+             ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_IGPU) &&
             strcmp(ggml_backend_reg_name(reg), "CUDA") == 0) {
             return device;
         }
@@ -335,7 +336,8 @@ static ggml_backend_dev_t find_other_cuda_device(
         ggml_backend_dev_t device = ggml_backend_dev_get(index);
         ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(device);
         if (device != excluded &&
-            ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+            (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU ||
+             ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_IGPU) &&
             strcmp(ggml_backend_reg_name(reg), "CUDA") == 0) {
             return device;
         }
