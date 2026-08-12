@@ -282,7 +282,10 @@ if (NOT LLAMA_USE_SYSTEM_GGML)
         endif()
     endif()
     llama_test(test-moe-cache LABEL "main;backend")
-    set_tests_properties(test-moe-cache PROPERTIES TIMEOUT 120)
+    # The test exits 77 when no CUDA device is present. ctest only treats that
+    # as a skip when SKIP_RETURN_CODE says so; without it, every CPU-only
+    # runner records the skip as a failure.
+    set_tests_properties(test-moe-cache PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()
 
 llama_build_and_test(test-moe-cache-fit.cpp)
