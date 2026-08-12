@@ -1239,7 +1239,7 @@ static void common_params_fit_impl(
                 for (const llama_moe_tensor_info & tensor : moe_tensors) {
                     if (tensor.layer >= 0 && tensor.layer < total_layers &&
                         tensor.n_expert > 0 && tensor.expert_size > 0 &&
-                        (uint64_t)tensor.n_expert <= INT64_MAX / (int64_t)tensor.expert_size) {
+                        (uint64_t)tensor.n_expert <= (uint64_t)(INT64_MAX / (int64_t)tensor.expert_size)) {
                         layer_bytes[tensor.layer] +=
                             (int64_t)tensor.n_expert * (int64_t)tensor.expert_size;
                     }
