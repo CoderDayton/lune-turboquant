@@ -2540,18 +2540,36 @@ static bool run_shared_budget(
     // the two disagree. Match the cache's query so the reserve leaves the
     // expected remainder on every device class.
     {
-        const long physical = cuda_physical_device(cuda->device);
-        const cudaError_t err = cudaSetDevice(physical >= 0 ? (int) physical : 0);
+        int prev_device = 0;
+        cudaError_t err = cudaGetDevice(&prev_device);
         if (err != cudaSuccess) {
-            fprintf(stderr, "cache-shared-budget: cudaSetDevice failed: %s\n",
+            fprintf(stderr, "cache-shared-budget: cudaGetDevice failed: %s\n",
                     cudaGetErrorString(err));
             return false;
         }
-        const cudaError_t error = cudaMemGetInfo(&free_bytes, &total_bytes);
-        if (error != cudaSuccess) {
+        // Restore the device afterwards: run_route_override runs next and
+        // exercises routing across two devices, so the current device must
+        // not leak out of this test. Fall back to the current device rather
+        // than device 0 when the physical device is not reported.
+        const long physical = cuda_physical_device(cuda->device);
+        const int target = physical >= 0 ? (int) physical : prev_device;
+        if (target != prev_device) {
+            err = cudaSetDevice(target);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "cache-shared-budget: cudaSetDevice failed: %s\n",
+                        cudaGetErrorString(err));
+                return false;
+            }
+        }
+        err = cudaMemGetInfo(&free_bytes, &total_bytes);
+        if (err != cudaSuccess) {
             fprintf(stderr, "cache-shared-budget: cudaMemGetInfo failed: %s\n",
-                    cudaGetErrorString(error));
+                    cudaGetErrorString(err));
+            cudaSetDevice(prev_device);
             return false;
+        }
+        if (target != prev_device) {
+            cudaSetDevice(prev_device);
         }
     }
 #else
