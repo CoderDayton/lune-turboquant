@@ -2959,7 +2959,7 @@ private:
                     // data"). if no sidecar exists (state saved by an older build), fall back
                     // to synthesizing a tip checkpoint from the just-restored state, which at
                     // least covers exact continuations.
-                    if (params_base.n_ctx_checkpoints > 0 && token_count > 0) {
+                    if (params_base.n_ctx_checkpoints > 0 && slot->prompt.tokens.size() > 0) {
                         if (checkpoints_load_sidecar(slot->prompt.checkpoints, filepath + ".ckpt")) {
                             SLT_INF(*slot, "restored %zu context checkpoints from sidecar\n", slot->prompt.checkpoints.size());
                         } else {
