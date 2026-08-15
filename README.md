@@ -1,8 +1,8 @@
-# lune-turboquant
+<div align="center">
+
+# Lune-TurboQuant
 
 <!-- header image goes here -->
-
-<div align="center">
 
 <b>TurboQuant KV cache compression for llama.cpp</b>
 
@@ -63,7 +63,7 @@ a wide range of hardware - locally and in the cloud.
 - Vulkan and SYCL backend support
 - CPU+GPU hybrid inference to partially accelerate models larger than the total VRAM capacity
 
-The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-org/ggml) library.
+The `llama.cpp` project is built on top of the [ggml](https://github.com/ggml-org/ggml) library.
 
 ## Supported backends
 
