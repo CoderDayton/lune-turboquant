@@ -237,6 +237,7 @@ static void set_rows_sycl_iq_host(
             }
         }
     }
+}
 
 // ============================================================
 // TurboQuant SET_ROWS cooperative kernels (128 work-items each)
