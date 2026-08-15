@@ -10245,6 +10245,19 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // mixed K/V cache types: the vector FA kernel is only instantiated for a subset of type
+    // combinations, the rest have to reach the same result through the MMA/TILE kernels.
+    // nb == 1 exercises the vector path, nb == 32 the batched one.
+    for (int nb : { 1, 32, }) {
+        for (ggml_type type_K : { GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_TURBO3_0, }) {
+            for (ggml_type type_V : { GGML_TYPE_F16, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_TURBO3_0, }) {
+                if (type_K == type_V) continue; // already covered above
+                test_cases.emplace_back(new test_flash_attn_ext(
+                            128, 128, 4, {1, 1}, 512, nb, true, false, 0, 0, GGML_PREC_F32, type_K, type_V));
+            }
+        }
+    }
+
     for (int hsk : { 40, 64, 72, 80, 96, 128, 192, 256, 320, 512, 576 }) {
         for (int hsv : { 40, 64, 72, 80, 96, 128, 192, 256, 512 }) {
             if (hsk != 192 && hsk != 320 && hsk != 576 && hsk != hsv) continue;

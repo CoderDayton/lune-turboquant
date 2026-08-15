@@ -508,6 +508,44 @@ static bool ggml_cuda_fattn_kv_type_supported(ggml_type type) {
     }
 }
 
+static bool ggml_cuda_fattn_vec_instance_available(ggml_type type_K, ggml_type type_V) {
+    // FATTN_VEC_CASE dispatches F32 K/V onto the F16 instances.
+    if (type_K == GGML_TYPE_F32) {
+        type_K = GGML_TYPE_F16;
+    }
+    if (type_V == GGML_TYPE_F32) {
+        type_V = GGML_TYPE_F16;
+    }
+
+    auto is_turbo = [](ggml_type t) {
+        return t == GGML_TYPE_TURBO2_0 || t == GGML_TYPE_TURBO3_0 || t == GGML_TYPE_TURBO4_0;
+    };
+
+    // turbo types are instantiated against each other, against q8_0 and against f16, in either position
+    if (is_turbo(type_K) || is_turbo(type_V)) {
+        auto turbo_partner = [&](ggml_type t) {
+            return is_turbo(t) || t == GGML_TYPE_Q8_0 || t == GGML_TYPE_F16;
+        };
+        return turbo_partner(type_K) && turbo_partner(type_V);
+    }
+
+#ifdef GGML_CUDA_FA_ALL_QUANTS
+    auto vec_type = [](ggml_type t) {
+        return t == GGML_TYPE_F16  || t == GGML_TYPE_BF16 || t == GGML_TYPE_Q4_0 || t == GGML_TYPE_Q4_1 ||
+               t == GGML_TYPE_Q5_0 || t == GGML_TYPE_Q5_1 || t == GGML_TYPE_Q8_0;
+    };
+    return vec_type(type_K) && vec_type(type_V);
+#else
+    if (type_K == type_V) {
+        return type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16 ||
+               type_K == GGML_TYPE_Q4_0 || type_K == GGML_TYPE_Q8_0;
+    }
+    // mixed f16/bf16 + q8_0
+    return (type_K == GGML_TYPE_Q8_0 && (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16)) ||
+           (type_V == GGML_TYPE_Q8_0 && (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16));
+#endif // GGML_CUDA_FA_ALL_QUANTS
+}
+
 static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const ggml_tensor * dst) {
 #ifndef FLASH_ATTN_AVAILABLE
     GGML_UNUSED(device); GGML_UNUSED(dst);
@@ -593,21 +631,6 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             return BEST_FATTN_KERNEL_NONE;
     }
 
-#ifndef GGML_CUDA_FA_ALL_QUANTS
-    if (K->type != V->type) {
-        // Allow mixed KV types for combinations that have FA template instances compiled in:
-        // - turbo2/3/4 + q8_0 (turbo cache work)
-        // - f16/bf16 + q8_0 (common K=f16, V=q8_0 setup)
-        auto is_kv_compat = [](ggml_type t) {
-            return t == GGML_TYPE_TURBO2_0 || t == GGML_TYPE_TURBO3_0 || t == GGML_TYPE_TURBO4_0
-                || t == GGML_TYPE_Q8_0 || t == GGML_TYPE_F16 || t == GGML_TYPE_BF16;
-        };
-        if (!is_kv_compat(K->type) || !is_kv_compat(V->type)) {
-            return BEST_FATTN_KERNEL_NONE;
-        }
-    }
-#endif // GGML_CUDA_FA_ALL_QUANTS
-
     if (!ggml_cuda_fattn_kv_type_supported(K->type) || !ggml_cuda_fattn_kv_type_supported(V->type)) {
         return BEST_FATTN_KERNEL_NONE;
     }
@@ -629,7 +652,12 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     // 192 satisfies % 64 == 0 but has no vec instance (DKQ != DV); force it onto the MMA path.
-    const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
+    // The VEC kernel is only instantiated for the K/V type combinations listed in
+    // ggml_cuda_flash_attn_ext_vec; the MMA and TILE kernels dequantize K and V to FP16 and
+    // therefore work for any combination. Restricting this to the compiled-in VEC instances
+    // lets unsupported combinations fall through to MMA/TILE instead of off the GPU entirely.
+    const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 &&
+        K->ne[1] % FATTN_KQ_STRIDE == 0 && ggml_cuda_fattn_vec_instance_available(K->type, V->type);
 
 #ifdef GGML_USE_HIP
     // HIP/ROCm: the TILE/MMA/WMMA FA paths allocate large f16 temp buffers for
