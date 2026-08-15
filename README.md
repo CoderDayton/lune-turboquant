@@ -1,8 +1,6 @@
 <div align="center">
 
-# Lune-TurboQuant
-
-<!-- header image goes here -->
+<img src="docs/lune-turboquant.png" alt="lune-turboquant" width="100%">
 
 <b>TurboQuant KV cache compression for llama.cpp</b>
 
