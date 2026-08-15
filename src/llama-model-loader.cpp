@@ -469,7 +469,7 @@ namespace GGUFMeta {
             struct GGUFMeta::ArrayInfo arr_info =
                 GGUFMeta::GKV<GGUFMeta::ArrayInfo>::get_kv(metadata, kid);
 
-            if (n != arr_info.length) {
+            if (n != 0 && n != arr_info.length) {
                 throw std::runtime_error(format("key %s has wrong array length; expected %u, got %u", key.c_str(), n, (uint32_t) arr_info.length));
             }
 
@@ -522,6 +522,9 @@ namespace GGUFMeta {
     template bool llama_model_loader::get_key_or_arr<std::array<int,      4>>  (enum llm_kv kid, std::array<int,      4>   & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<uint32_t, 512>>(enum llm_kv kid, std::array<uint32_t, 512> & result, uint32_t n, bool required);
     template bool llama_model_loader::get_key_or_arr<std::array<float,    512>>(enum llm_kv kid, std::array<float,    512> & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int,      3>>  (enum llm_kv kid, std::array<int,      3>   & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int,      5>>  (enum llm_kv kid, std::array<int,      5>   & result, uint32_t n, bool required);
+    template bool llama_model_loader::get_key_or_arr<std::array<int,      6>>  (enum llm_kv kid, std::array<int,      6>   & result, uint32_t n, bool required);
 
 
 llama_model_loader::llama_model_loader(
@@ -755,6 +758,8 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_Q6_K:    ftype = LLAMA_FTYPE_MOSTLY_Q6_K;    break;
             case GGML_TYPE_TQ1_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ1_0;   break;
             case GGML_TYPE_TQ2_0:   ftype = LLAMA_FTYPE_MOSTLY_TQ2_0;   break;
+            case GGML_TYPE_TQ3_1S:  ftype = LLAMA_FTYPE_MOSTLY_TQ3_1S;  break;
+            case GGML_TYPE_TQ4_1S:  ftype = LLAMA_FTYPE_MOSTLY_TQ4_1S;  break;
             case GGML_TYPE_IQ2_XXS: ftype = LLAMA_FTYPE_MOSTLY_IQ2_XXS; break;
             case GGML_TYPE_IQ2_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ2_XS;  break;
             case GGML_TYPE_IQ2_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ2_S;   break;

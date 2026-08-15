@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <iomanip>
 #include <map>
@@ -928,6 +929,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
     const int32_t * target_layer_ids   = nullptr; // model_dft's extract layer indices
     uint32_t        target_layer_ids_n = 0;
+    int32_t         n_layer_tgt        = 0;       // extract id == n_layer_tgt -> pre-final-norm state (nextn)
 
     // scratch buffer for concatenated target features [n_tokens, n_embd_enc]
     std::vector<float> features_buf;
@@ -989,6 +991,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             s.reset(common_sampler_init(model_dft, sparams));
         }
 
+
         // offload draft sampling to the backend
         backend_chains.assign(n_seq, nullptr);
         if (this->params.backend_sampling) {
@@ -1006,12 +1009,27 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         }
 
         // turn on extraction of the target layers' input embeddings
+
         for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
-            llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
+            if (target_layer_ids[k] == n_layer_tgt) {
+                llama_set_embeddings_nextn(ctx_tgt, true, /*masked*/ false);
+            } else {
+                llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
+            }
         }
 
         llama_set_embeddings_nextn(ctx_dft, true, /*masked*/ true);
-        llama_set_causal_attn(ctx_dft, false); // DFlash needs non-causal attention
+
+        // generic DFlash drafts with non-causal block attention; Laguna drafters
+        // are trained with a causal noise block
+        {
+            bool causal = false;
+            char buf[32] = {};
+            if (llama_model_meta_val_str(model_dft, "dflash.decoder_arch", buf, sizeof(buf)) >= 0) {
+                causal = strcmp(buf, "laguna") == 0;
+            }
+            llama_set_causal_attn(ctx_dft, causal);
+        }
     }
 
     ~common_speculative_impl_draft_dflash() override {
@@ -1099,7 +1117,9 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 // gather this chunk's target features, interleaved by extract layer
                 features_buf.resize((size_t) n_chunk * n_embd_enc);
                 for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
-                    const float * layer = llama_get_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k]);
+                    const float * layer = target_layer_ids[k] == n_layer_tgt
+                        ? llama_get_embeddings_nextn(ctx_tgt)
+                        : llama_get_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k]);
                     if (!layer) {
                         GGML_ABORT("DFlash: target layer %d input not extracted.", target_layer_ids[k]);
                     }
@@ -1107,6 +1127,29 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                         float       * dst = features_buf.data() + (size_t) i * n_embd_enc + k * (size_t) n_embd_tgt;
                         const float * src = layer + (size_t) (i_batch_beg[seq_id] + offset + i) * n_embd_tgt;
                         std::memcpy(dst, src, (size_t) n_embd_tgt * sizeof(float));
+                    }
+                }
+
+                // sanitize non-finite feature values before fusing. on Metal, the
+                // mat-mat kernels stage f32 activations as f16 for the simdgroup
+                // multiply; Laguna's massive-activation rows (attention-sink tokens,
+                // |x| ~ 1e6 in the pre-final-norm residual) overflow f16 -> inf/nan.
+                // one poisoned row would otherwise NaN the whole drafter KV cache.
+                {
+                    size_t n_bad = 0;
+                    for (auto & v : features_buf) {
+                        if (!std::isfinite(v)) {
+                            v = v != v ? 0.0f : (v > 0.0f ? 65504.0f : -65504.0f);
+                            n_bad++;
+                        }
+                    }
+                    if (n_bad > 0) {
+                        static bool warned = false;
+                        if (!warned) {
+                            LOG_WRN("%s: sanitized %zu non-finite target feature values (f16 overflow on massive activations); "
+                                    "draft quality may degrade slightly on affected rows\n", __func__, n_bad);
+                            warned = true;
+                        }
                     }
                 }
 
@@ -1271,6 +1314,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     }
 };
 
+// DFlash: block-diffusion drafting with a draft-side KV cache injection
 struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     common_params_speculative_draft params; // reuses the draft-model params slot (ctx_tgt/ctx_dft)
 
@@ -2451,28 +2495,64 @@ common_speculative * common_speculative_init(common_params_speculative & params,
     {
         uint32_t enabled_configs = common_get_enabled_speculative_configs(params.types);
 
-        auto add_config_if_enabled = [&](common_speculative_type type, bool available = true) {
-            if (available && (enabled_configs & (1u << type))) {
-                configs.emplace_back(type, params);
-            }
-        };
+        bool has_draft_simple = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE));
+        bool has_draft_eagle3 = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3)) && params.draft.ctx_dft != nullptr;
+        bool has_draft_mtp    = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_MTP))    && params.draft.ctx_dft != nullptr;
+        bool has_draft_dflash = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)) && params.draft.ctx_dft != nullptr;
+        bool has_draft_dspark = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK)) && params.draft.ctx_dft != nullptr;
+
+        // If --dflash or --eagle3 flags are set, enable the corresponding type
+        if (!has_draft_dflash && params.draft.dflash && params.draft.ctx_dft != nullptr) {
+            has_draft_dflash = true;
+        }
+        if (!has_draft_eagle3 && params.draft.eagle3 && params.draft.ctx_dft != nullptr) {
+            has_draft_eagle3 = true;
+        }
+
+
+        bool has_ngram_cache   = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_CACHE));
+        bool has_ngram_simple  = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE));
+        bool has_ngram_map_k   = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K));
+        bool has_ngram_map_k4v = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V));
+        bool has_ngram_mod     = (enabled_configs & (1u << COMMON_SPECULATIVE_TYPE_NGRAM_MOD));
 
         // when adding a new type - update here the logic above
         static_assert(COMMON_SPECULATIVE_TYPE_COUNT == 11);
 
         // this list here defines the priority of the speculators
         // the one with highest priority are listed first
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V);
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_NGRAM_MOD);
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_NGRAM_CACHE);
-
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3, params.draft.ctx_dft != nullptr);
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_MTP,    params.draft.ctx_dft != nullptr);
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH, params.draft.ctx_dft != nullptr);
-        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, params.draft.ctx_dft != nullptr);
+        if (has_ngram_simple) {
+            // This implementation can guess a lot of tokens without any draft model.
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE, params));
+        }
+        if (has_ngram_map_k) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K, params));
+        }
+        if (has_ngram_map_k4v) {
+            // This implementation can guess tokens with high acceptance rate but is more expensive.
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V, params));
+        }
+        if (has_ngram_mod) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_NGRAM_MOD, params));
+        }
+        if (has_ngram_cache) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_NGRAM_CACHE, params));
+        }
+        if (has_draft_simple) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, params));
+        }
+        if (has_draft_eagle3) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3, params));
+        }
+        if (has_draft_mtp) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, params));
+        }
+        if (has_draft_dflash) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH, params));
+        }
+        if (has_draft_dspark) {
+            configs.push_back(common_speculative_config(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, params));
+        }
     }
 
     std::vector<std::unique_ptr<common_speculative_impl>> impls = {};

@@ -26,6 +26,7 @@ class llama_kv_cache_dsa_context;
 class llama_kv_cache_msa_context;
 class llama_kv_cache_dsv4_raw_context;
 class llama_kv_cache_dsv4_context;
+
 class llama_kv_cache_iswa_context;
 class llama_memory_recurrent_context;
 class llama_memory_hybrid_context;
@@ -48,6 +49,7 @@ enum llm_fused_op {
     LLM_FUSED_OP_DSV4_HC_COMB,
     LLM_FUSED_OP_DSV4_HC_POST,
 };
+
 
 enum llm_ffn_op_type : int {
     LLM_FFN_NONE = 0,           // sentinel: unset; archs must assign before use
@@ -719,15 +721,12 @@ public:
     std::map<llama_seq_id, llama_sampler *> samplers;
 };
 
-//
-// llm_graph_result
-//
+struct llm_graph_fused_node {
+    llm_fused_op op;
+    ggml_tensor * tensor;
+    int il;
+};
 
-// these objects deliver the result from the graph build process back to the llama_context
-// note that the input tensors created for the graph are referenced here - the goal is to be able to populate their
-//   specific data, by calling the set_inputs() method
-// along with the input tensors, the object also provides commonly used outputs tensors, such as logits, embeddings, etc.
-//   these are used by the llama_context to extact the relevant data, based on the compute parameters
 
 // callback that allows us to apply custom logic to each tensor (e.g. ggml-alloc, offloading, etc.)
 using llm_graph_cb = std::function<void(const llama_ubatch & ubatch, ggml_tensor * cur, const char * name, int il)>;
@@ -849,11 +848,6 @@ struct llm_graph_params {
     }
 };
 
-struct llm_graph_fused_node {
-    llm_fused_op op;
-    ggml_tensor * tensor;
-    int il;
-};
 
 class llm_graph_result {
 public:
@@ -894,6 +888,8 @@ public:
 
     void set_params(const llm_graph_params & params);
 
+
+
     // important graph nodes
     ggml_tensor * t_inp_tokens  = nullptr;
     ggml_tensor * t_inp_embd    = nullptr; // [n_embd_inp, n_tokens]
@@ -904,13 +900,14 @@ public:
 
     std::vector<ggml_tensor *> t_layer_inp;
 
+
     std::vector<ggml_tensor *> t_sampled;
     std::vector<ggml_tensor *> t_sampled_probs;
     std::vector<ggml_tensor *> t_sampled_logits;
     std::vector<ggml_tensor *> t_candidates;
 
+
     std::vector<llm_graph_input_ptr> inputs;
-    std::vector<llm_graph_fused_node> fused_nodes;
 
     ggml_context_ptr ctx_compute;
 
@@ -1108,7 +1105,6 @@ struct llm_graph_context {
              ggml_tensor * gate_exps_s = nullptr,
              ggml_tensor * down_exps_s = nullptr,
              ggml_tensor * selected_experts_in = nullptr) const;
-
     //
     // inputs
     //
@@ -1248,6 +1244,7 @@ struct llm_graph_context {
 
     ggml_tensor * build_attn(
             llm_graph_input_attn_cross * inp,
+
             ggml_tensor * wo,
             ggml_tensor * wo_b,
             ggml_tensor * wo_s,

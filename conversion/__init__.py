@@ -55,7 +55,10 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "DFlashDraftModel": "qwen",
     "Qwen3DSparkModel": "qwen",
     "DeepseekV4ForCausalLM": "deepseek",
+    "DFlashLagunaForCausalLM": "laguna",
+
     "DeepseekV4DSparkModel": "deepseek",
+
     "DistilBertForMaskedLM": "bert",
     "DistilBertForSequenceClassification": "bert",
     "DistilBertModel": "bert",
@@ -70,7 +73,6 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "Exaone4ForCausalLM": "exaone",
     "ExaoneForCausalLM": "exaone",
     "ExaoneMoEForCausalLM": "exaone",
-    "ExaoneMoeForCausalLM": "exaone",
     "FalconForCausalLM": "falcon",
     "FalconH1ForCausalLM": "falcon_h1",
     "FalconMambaForCausalLM": "mamba",
@@ -216,8 +218,10 @@ TEXT_MODEL_MAP: dict[str, str] = {
     "Qwen3MoeForCausalLM": "qwen",
     "Qwen3NextForCausalLM": "qwen",
     "Qwen3OmniMoeForConditionalGeneration": "qwen3vl",
+
     "PocketTTSModel": "pockettts",
     "Qwen3TTSForConditionalGeneration": "qwen3tts",
+
     "Qwen3VLForConditionalGeneration": "qwen3vl",
     "Qwen3VLMoeForConditionalGeneration": "qwen3vl",
     "Qwen3_5ForCausalLM": "qwen",
@@ -313,8 +317,10 @@ MMPROJ_MODEL_MAP: dict[str, str] = {
     "Qwen2_5_VLForConditionalGeneration": "qwenvl",
     "Qwen3ASRForConditionalGeneration": "qwen3vl",
     "Qwen3OmniMoeForConditionalGeneration": "qwen3vl",
+
     "PocketTTSModel": "pockettts",
     "Qwen3TTSForConditionalGeneration": "qwen3tts",
+
     "Qwen3VLForConditionalGeneration": "qwen3vl",
     "Qwen3VLMoeForConditionalGeneration": "qwen3vl",
     "Qwen3_5ForConditionalGeneration": "qwen3vl",

@@ -258,7 +258,7 @@ static const char * cu_get_error_str(CUresult err) {
 #define FP16_AVAILABLE
 #endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA) || __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
 
-#if defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610
+#if defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610 && __CUDA_ARCH__ != 600
 #define FAST_FP16_AVAILABLE
 #endif // defined(FP16_AVAILABLE) && __CUDA_ARCH__ != 610
 
@@ -302,13 +302,13 @@ static bool fp16_available(const int cc) {
 
 static bool fast_fp16_available(const int cc) {
     return GGML_CUDA_CC_IS_AMD(cc) ||
-        (GGML_CUDA_CC_IS_NVIDIA(cc) && fp16_available(cc) && ggml_cuda_highest_compiled_arch(cc) != 610) ||
+        (GGML_CUDA_CC_IS_NVIDIA(cc) && fp16_available(cc) && ggml_cuda_highest_compiled_arch(cc) != 610 && ggml_cuda_highest_compiled_arch(cc) != 600) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && fp16_available(cc));
 }
 
 // To be used for feature selection of external libraries, e.g. cuBLAS.
 static bool fast_fp16_hardware_available(const int cc) {
-    return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_PASCAL && cc != 610) || GGML_CUDA_CC_IS_AMD(cc) ||
+    return (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_PASCAL && cc != 610 && cc != 600) || GGML_CUDA_CC_IS_AMD(cc) ||
         (GGML_CUDA_CC_IS_MTHREADS(cc) && cc >= GGML_CUDA_CC_QY2);
 }
 
@@ -840,12 +840,12 @@ static __device__ __forceinline__ float ggml_cuda_e8m0_to_fp32(uint8_t x) {
 static __device__ __forceinline__ float ggml_cuda_ue4m3_to_fp32(uint8_t x) {
 #if defined(GGML_USE_HIP) && defined(CDNA3) && defined(FP8_AVAILABLE) && HIP_VERSION >= 60200000
     // ROCm does not support fp8 in software on devices with fp8 hardware,
-    // but CDNA3 supports only e4m3_fnuz (no inf).
+    // but CDNA3 supports only e4m3_fnuz (no inf). CDNA4 (gfx950) uses standard e4m3fn.
     const uint32_t bits = x * (x != 0x7F && x != 0xFF); // Convert NaN to 0.0f to match CPU implementation.
     const __hip_fp8_e4m3_fnuz xf = *reinterpret_cast<const __hip_fp8_e4m3_fnuz *>(&bits);
     return static_cast<float>(xf) / 2;
 #else
-#if defined(FP8_AVAILABLE) && !defined(GGML_USE_HIP)
+#if defined(FP8_AVAILABLE) && !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= 900
     const uint32_t bits = x * (x != 0x7F && x != 0xFF); // Convert NaN to 0.0f to match CPU implementation.
     const __nv_fp8_e4m3 xf = *reinterpret_cast<const __nv_fp8_e4m3 *>(&bits);
     return static_cast<float>(xf) / 2;
@@ -1155,6 +1155,11 @@ struct ggml_cuda_device_info {
     };
 
     cuda_device_info devices[GGML_CUDA_MAX_DEVICES] = {};
+
+    // peer access availability: peer_access[from][to] = true when
+    // cudaDeviceEnablePeerAccess(from, to) succeeded at init time.
+    // When false, cross-device copies must use host staging instead.
+    bool peer_access[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_DEVICES] = {{}};
 
     std::array<float, GGML_CUDA_MAX_DEVICES> default_tensor_split = {};
 };

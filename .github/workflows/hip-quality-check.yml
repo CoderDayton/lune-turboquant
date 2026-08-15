@@ -9,8 +9,6 @@ on:
       '.github/workflows/hip-quality-check.yml',
       '**/*.cu',
       '**/*.cuh',
-      'ggml/src/ggml-hip/CMakeLists.txt',
-      'ggml/src/ggml-cuda/vendors/hip.h',
       'scripts/hip/gcn-cdna-vgpr-check.py'
     ]
 
@@ -20,8 +18,6 @@ on:
       '.github/workflows/hip-quality-check.yml',
       '**/*.cu',
       '**/*.cuh',
-      'ggml/src/ggml-hip/CMakeLists.txt',
-      'ggml/src/ggml-cuda/vendors/hip.h',
       'scripts/hip/gcn-cdna-vgpr-check.py'
     ]
 

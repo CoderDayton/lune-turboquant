@@ -277,6 +277,28 @@ if (NOT LLAMA_SANITIZE_ADDRESS AND NOT GGML_SCHED_NO_REALLOC)
   llama_build_and_test(test-opt.cpp)
 endif()
 llama_build_and_test(test-backend-ops.cpp)
+if (NOT LLAMA_USE_SYSTEM_GGML)
+    llama_build(test-moe-cache.cpp)
+    if (GGML_CUDA)
+        # The test compares the cache's budget grants against cudaMemGetInfo,
+        # the same query the cache uses. On UMA devices (GB10, Jetson) the
+        # backend device memory API reports /proc/meminfo instead, so the
+        # reserve calculation must match the cache's own view.
+        find_package(CUDAToolkit QUIET)
+        if (CUDAToolkit_FOUND)
+            target_compile_definitions(test-moe-cache PRIVATE GGML_CUDA=1)
+            target_include_directories(test-moe-cache PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+            target_link_libraries(test-moe-cache PRIVATE CUDA::cudart)
+        endif()
+    endif()
+    llama_test(test-moe-cache LABEL "main;backend")
+    # The test exits 77 when no CUDA device is present. ctest only treats that
+    # as a skip when SKIP_RETURN_CODE says so; without it, every CPU-only
+    # runner records the skip as a failure.
+    set_tests_properties(test-moe-cache PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()
+
+llama_build_and_test(test-moe-cache-fit.cpp)
 
 llama_build_and_test(test-model-load-cancel.cpp LABEL "model")
 llama_build_and_test(test-autorelease.cpp       LABEL "model")
@@ -335,6 +357,9 @@ endif()
 get_filename_component(TEST_TARGET test-c.c NAME_WE)
 add_executable(${TEST_TARGET} test-c.c)
 target_link_libraries(${TEST_TARGET} PRIVATE llama)
+
+# TurboQuant WHT round-trip test (links ggml turbo codec symbols via llama)
+llama_build_and_test(test-turbo-quant.c LABEL "turbo")
 
 if (NOT LLAMA_USE_SYSTEM_GGML)
     # Needs non-public ggml-impl.h

@@ -156,6 +156,8 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q2_0          = 41, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_TQ3_1S        = 43, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_TQ4_1S        = 44, // except 1d tensors
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
@@ -217,6 +219,13 @@ extern "C" {
     enum llama_context_type {
         LLAMA_CONTEXT_TYPE_DEFAULT = 0,
         LLAMA_CONTEXT_TYPE_MTP     = 1,
+    };
+
+    enum llama_moe_cache_mode {
+        LLAMA_MOE_CACHE_MODE_UNSPECIFIED = -1,
+        LLAMA_MOE_CACHE_MODE_OFF = 0,
+        LLAMA_MOE_CACHE_MODE_AUTO = 1,
+        LLAMA_MOE_CACHE_MODE_ON = 2,
     };
 
     // TODO: simplify (https://github.com/ggml-org/llama.cpp/pull/9294#pullrequestreview-2286561979)
@@ -380,6 +389,9 @@ extern "C" {
 
         enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
+
+        enum llama_moe_cache_mode moe_cache_mode; // runtime MoE expert cache mode
+        size_t moe_cache_budget_mib;               // 0 uses the provider's available-memory budget
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted

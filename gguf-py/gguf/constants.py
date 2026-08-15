@@ -11,7 +11,6 @@ GGUF_MAGIC             = 0x46554747  # "GGUF"
 GGUF_VERSION           = 3
 GGUF_DEFAULT_ALIGNMENT = 32
 GGML_QUANT_VERSION     = 2  # GGML_QNT_VERSION from ggml.h
-GGML_MAX_DIMS          = 4  # GGML_MAX_DIMS from ggml.h
 
 #
 # metadata keys
@@ -163,6 +162,7 @@ class Keys:
         BLOCK_SIZE                        = "{arch}.block_size"
         NORM_BEFORE_RESIDUAL              = "{arch}.norm_before_residual"
         NORM_BEFORE_FC                    = "{arch}.norm_before_fc"
+        DECODER_ARCH                      = "{arch}.decoder_arch"
 
     class Adapters:
         COUNT                = "{arch}.adapters.count"
@@ -195,9 +195,9 @@ class Keys:
         OUTPUT_GROUP_COUNT           = "{arch}.attention.output_group_count"
         OUTPUT_LORA_RANK             = "{arch}.attention.output_lora_rank"
         OUTPUT_SCALE                 = "{arch}.attention.output_scale"
-        VALUE_SCALE                  = "{arch}.attention.value_scale"
         COMPRESS_RATIOS              = "{arch}.attention.compress_ratios"
         COMPRESS_ROPE_FREQ_BASE      = "{arch}.attention.compress_rope_freq_base"
+        VALUE_SCALE                  = "{arch}.attention.value_scale"
         TEMPERATURE_LENGTH           = "{arch}.attention.temperature_length"
         KEY_LENGTH_MLA               = "{arch}.attention.key_length_mla"
         VALUE_LENGTH_MLA             = "{arch}.attention.value_length_mla"
@@ -330,7 +330,6 @@ class Keys:
         PROJECTOR_TYPE        = "clip.projector_type"
         HAS_VISION_ENCODER    = "clip.has_vision_encoder"
         HAS_AUDIO_ENCODER     = "clip.has_audio_encoder"
-        HAS_GEN_AUDIO_ENCODER = "clip.has_gen_audio_encoder"
         HAS_LLAVA_PROJECTOR   = "clip.has_llava_projector"
 
     class ClipVision:
@@ -405,6 +404,7 @@ class Keys:
             DOWNSAMPLE_RATE = "clip.audio.projector.downsample_rate"
             HEAD_COUNT      = "clip.audio.projector.head_count"
 
+
     class ClipGenAudio:
         PROJECTOR_TYPE      = "clip.gen.audio.projector_type" # for mixed modality models
         # name of the weight variant, for settings that are not in the checkpoint
@@ -418,6 +418,7 @@ class Keys:
             HEAD_COUNT      = "clip.gen.audio.attention.head_count"
             HEAD_COUNT_KV   = "clip.gen.audio.attention.head_count_kv"
             LAYERNORM_EPS   = "clip.gen.audio.attention.layer_norm_epsilon"
+
 
     class Diffusion:
         SHIFT_LOGITS        = "diffusion.shift_logits"
@@ -583,8 +584,10 @@ class MODEL_ARCH(IntEnum):
     TALKIE           = auto()
     MELLUM           = auto()
     NANBEIGE         = auto()
+
     QWEN3TTS         = auto()
     POCKETTTS        = auto()
+
 
 
 class VISION_PROJECTOR_TYPE(IntEnum):
@@ -786,6 +789,7 @@ class MODEL_TENSOR(IntEnum):
     ENC_FFN_DOWN         = auto()
     ENC_FFN_UP           = auto()
     ENC_OUTPUT_NORM      = auto()
+    ENC_AUX_NORM         = auto()
     CLS                  = auto() # classifier
     CLS_OUT              = auto() # classifier output projection
     CLS_NORM             = auto()
@@ -985,6 +989,7 @@ class MODEL_TENSOR(IntEnum):
     A_ENC_DOWNSAMPLE_CONV = auto() # mimo-audio-tokenizer: post-transformer downsample conv
     A_ENC_DOWNSAMPLE_NORM = auto() # mimo-audio-tokenizer: post-transformer downsample norm
     A_ENC_RVQ_CODEBOOK    = auto() # mimo-audio-tokenizer: residual vector quantizer codebook, per quantizer index
+
     A_ENC_CONV_RES2       = auto() # qwen3tts
     A_ENC_SE_CONV1        = auto() # qwen3tts
     A_ENC_SE_CONV2        = auto() # qwen3tts
@@ -1076,6 +1081,7 @@ class MODEL_TENSOR(IntEnum):
     A_GEN_WAV_SEANET_RES_CONV1 = auto()
     A_GEN_WAV_SEANET_RES_CONV2 = auto()
     A_GEN_WAV_SEANET_SCALE_CONV = auto() # strided upsample convtr
+
     A_MMPROJ              = auto()
     A_MMPROJ_FC           = auto()
     A_MM_NORM_PRE         = auto()
@@ -1224,9 +1230,9 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.DEEPSEEK:         "deepseek",
     MODEL_ARCH.DEEPSEEK2:        "deepseek2",
     MODEL_ARCH.DEEPSEEK2OCR:     "deepseek2-ocr",
-    MODEL_ARCH.DEEPSEEK32:       "deepseek32",
     MODEL_ARCH.DEEPSEEK4:        "deepseek4",
     MODEL_ARCH.CHATGLM:          "chatglm",
+    MODEL_ARCH.DEEPSEEK4:        "deepseek4",
     MODEL_ARCH.GLM4:             "glm4",
     MODEL_ARCH.GLM4_MOE:         "glm4moe",
     MODEL_ARCH.GLM_DSA:          "glm-dsa",
@@ -1291,8 +1297,10 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.TALKIE:           "talkie",
     MODEL_ARCH.MELLUM:           "mellum",
     MODEL_ARCH.NANBEIGE:         "nanbeige",
+
     MODEL_ARCH.QWEN3TTS:         "qwen3tts",
     MODEL_ARCH.POCKETTTS:        "pockettts",
+
 }
 
 VISION_PROJECTOR_TYPE_NAMES: dict[VISION_PROJECTOR_TYPE, str] = {
@@ -1314,6 +1322,9 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.MASKED_EMBD_CENTROIDS:     "masked_embd_centroids",
     MODEL_TENSOR.MASKED_EMBD_ORDERING:      "masked_embd_ordering",
     MODEL_TENSOR.POS_EMBD:                  "position_embd",
+    MODEL_TENSOR.HC_HEAD_FN:                "output_hc_fn",
+    MODEL_TENSOR.HC_HEAD_BASE:              "output_hc_base",
+    MODEL_TENSOR.HC_HEAD_SCALE:             "output_hc_scale",
     MODEL_TENSOR.OUTPUT_NORM:               "output_norm",
     MODEL_TENSOR.OUTPUT:                    "output",
     MODEL_TENSOR.DENSE_2_OUT:               "dense_2", # embeddinggemma 2_Dense
@@ -1361,8 +1372,8 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.FFN_DOWN_EXP:              "blk.{bid}.ffn_down_exps",
     MODEL_TENSOR.FFN_UP_EXP:                "blk.{bid}.ffn_up_exps",
     MODEL_TENSOR.FFN_GATE_UP_EXP:           "blk.{bid}.ffn_gate_up_exps",
-    MODEL_TENSOR.FFN_EXP_PROBS_B:           "blk.{bid}.exp_probs_b",
     MODEL_TENSOR.FFN_GATE_TID2EID:          "blk.{bid}.ffn_gate_tid2eid",
+    MODEL_TENSOR.FFN_EXP_PROBS_B:           "blk.{bid}.exp_probs_b",
     MODEL_TENSOR.MOE_LATENT_DOWN:           "blk.{bid}.ffn_latent_down",      # nemotron 3 super
     MODEL_TENSOR.MOE_LATENT_UP:             "blk.{bid}.ffn_latent_up",        # nemotron 3 super
     MODEL_TENSOR.LAYER_OUT_NORM:            "blk.{bid}.layer_output_norm",
@@ -1492,6 +1503,7 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.ENC_FFN_DOWN:              "enc.blk.{bid}.ffn_down",
     MODEL_TENSOR.ENC_FFN_UP:                "enc.blk.{bid}.ffn_up",
     MODEL_TENSOR.ENC_OUTPUT_NORM:           "enc.output_norm",
+    MODEL_TENSOR.ENC_AUX_NORM:              "enc.aux_norm",
     MODEL_TENSOR.CLS:                       "cls",
     MODEL_TENSOR.CLS_OUT:                   "cls.output",
     MODEL_TENSOR.CLS_NORM:                  "cls.norm",
@@ -1690,6 +1702,7 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.A_ENC_DOWNSAMPLE_CONV:     "a.downsample.conv",
     MODEL_TENSOR.A_ENC_DOWNSAMPLE_NORM:     "a.downsample.norm",
     MODEL_TENSOR.A_ENC_RVQ_CODEBOOK:        "a.rvq.codebook",
+
     MODEL_TENSOR.A_ENC_CONV_RES2:           "a.blk.{bid}.res2.{xid}",
     MODEL_TENSOR.A_ENC_SE_CONV1:            "a.blk.{bid}.se_conv1",
     MODEL_TENSOR.A_ENC_SE_CONV2:            "a.blk.{bid}.se_conv2",
@@ -1778,6 +1791,7 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.A_GEN_WAV_SEANET_RES_CONV1: "a.gen.wav.seanet.blk.{bid}.res_conv1",
     MODEL_TENSOR.A_GEN_WAV_SEANET_RES_CONV2: "a.gen.wav.seanet.blk.{bid}.res_conv2",
     MODEL_TENSOR.A_GEN_WAV_SEANET_SCALE_CONV: "a.gen.wav.seanet.blk.{bid}.scale_conv",
+
     MODEL_TENSOR.A_MMPROJ:                  "mm.a.mlp.{bid}",
     MODEL_TENSOR.A_MMPROJ_FC:               "mm.a.fc",
     MODEL_TENSOR.A_MM_NORM_PRE:             "mm.a.norm_pre",
@@ -2032,6 +2046,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.A_ENC_CONV_NORM,
         MODEL_TENSOR.A_ENC_CONV_PW1,
         MODEL_TENSOR.A_ENC_CONV_PW2,
+
         MODEL_TENSOR.A_ENC_CONV_RES2,
         MODEL_TENSOR.A_ENC_SE_CONV1,
         MODEL_TENSOR.A_ENC_SE_CONV2,
@@ -2120,6 +2135,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.A_GEN_WAV_SEANET_RES_CONV1,
         MODEL_TENSOR.A_GEN_WAV_SEANET_RES_CONV2,
         MODEL_TENSOR.A_GEN_WAV_SEANET_SCALE_CONV,
+
         MODEL_TENSOR.A_ENC_CONV_NORM_MEAN,
         MODEL_TENSOR.A_ENC_CONV_NORM_VAR,
         MODEL_TENSOR.A_ENC_MEL_FILTERS,
@@ -2629,13 +2645,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.SSM_NORM,
         MODEL_TENSOR.SSM_IN,
         MODEL_TENSOR.SSM_BETA_ALPHA,
-        MODEL_TENSOR.SSM_OUT,
-        MODEL_TENSOR.NEXTN_EH_PROJ,
-        MODEL_TENSOR.NEXTN_EMBED_TOKENS,
-        MODEL_TENSOR.NEXTN_ENORM,
-        MODEL_TENSOR.NEXTN_HNORM,
-        MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
-        MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
+        MODEL_TENSOR.SSM_OUT
     ],
     MODEL_ARCH.QWEN3VL: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -3540,13 +3550,6 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_DOWN_SHEXP,
         MODEL_TENSOR.FFN_UP_SHEXP,
         MODEL_TENSOR.FFN_EXP_PROBS_B,
-        # NextN/MTP tensors
-        MODEL_TENSOR.NEXTN_EH_PROJ,
-        MODEL_TENSOR.NEXTN_EMBED_TOKENS,
-        MODEL_TENSOR.NEXTN_ENORM,
-        MODEL_TENSOR.NEXTN_HNORM,
-        MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
-        MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
     ],
     MODEL_ARCH.DEEPSEEK2OCR: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -4755,6 +4758,8 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.ATTN_OUT,
         MODEL_TENSOR.ATTN_Q_NORM,
         MODEL_TENSOR.ATTN_K_NORM,
+        MODEL_TENSOR.ATTN_GATE,
+
         MODEL_TENSOR.ATTN_SINKS,
         MODEL_TENSOR.ATTN_Q_A,
         MODEL_TENSOR.ATTN_Q_B,
@@ -4772,6 +4777,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.HC_HEAD_FN,
         MODEL_TENSOR.HC_HEAD_BASE,
         MODEL_TENSOR.HC_HEAD_SCALE,
+
         MODEL_TENSOR.FFN_NORM,
         MODEL_TENSOR.FFN_GATE,
         MODEL_TENSOR.FFN_DOWN,
@@ -4790,6 +4796,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.DSPARK_MARKOV_W1,
         MODEL_TENSOR.DSPARK_MARKOV_W2,
         MODEL_TENSOR.DSPARK_CONF_PROJ,
+        MODEL_TENSOR.ENC_AUX_NORM,
     ],
     MODEL_ARCH.MISTRAL4: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -5006,6 +5013,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_DOWN,
         MODEL_TENSOR.FFN_UP,
     ],
+
     MODEL_ARCH.QWEN3TTS: [
         MODEL_TENSOR.TOKEN_EMBD,
         MODEL_TENSOR.OUTPUT_NORM,
@@ -5034,6 +5042,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_DOWN,
         MODEL_TENSOR.FFN_UP,
     ],
+
 }
 
 # tensors that will not be serialized
@@ -5171,12 +5180,15 @@ class GGMLQuantizationType(IntEnum):
     NVFP4   = 40
     Q1_0    = 41
     Q2_0    = 42
+    TQ3_1S  = 45
+    TQ4_1S  = 46
 
 
 class ExpertGatingFuncType(IntEnum):
-    SOFTMAX       = 1
-    SIGMOID       = 2
-    SQRTSOFTPLUS  = 4
+    SOFTMAX        = 1
+    SIGMOID        = 2
+    SOFTMAX_WEIGHT = 3
+    SQRTSOFTPLUS   = 4
 
 
 # TODO: add GGMLFileType from ggml_ftype in ggml.h
@@ -5227,6 +5239,9 @@ class LlamaFileType(IntEnum):
     MOSTLY_NVFP4         = 39  # except 1d tensors
     MOSTLY_Q1_0          = 40  # except 1d tensors
     MOSTLY_Q2_0          = 41  # except 1d tensors
+    MOSTLY_TQ3_1S        = 43  # except 1d tensors
+    MOSTLY_TQ4_1S        = 44  # except 1d tensors
+
 
     GUESSED              = 1024  # not specified in the model file
 
@@ -5308,10 +5323,12 @@ class VisionProjectorType:
     GLM4V = "glm4v"
     YOUTUVL = "youtuvl"
     NEMOTRON_V2_VL = "nemotron_v2_vl"
+
     QWEN3TTS_SPKENC = "qwen3tts_spkenc" # audio: ECAPA-TDNN speaker encoder
     QWEN3TTS_GEN = "qwen3tts_gen" # audio generation: code_predictor
     POCKETTTS_SPKENC = "pockettts_spkenc" # audio: mimi encoder as voice-prompt encoder
     POCKETTTS_GEN = "pockettts_gen" # audio generation: flow-matching decoder + mimi decoder
+
     HUNYUANVL      = "hunyuanvl"
     PARAKEET       = "parakeet"  # audio
     MINIMAXM3      = "minimax_m3"
@@ -5361,6 +5378,8 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.NVFP4:   (64, 4 + 32),
     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
     GGMLQuantizationType.Q2_0:    (64, 2 + 16),
+    GGMLQuantizationType.TQ3_1S:  (32, 2 + 2 + 12),
+    GGMLQuantizationType.TQ4_1S:  (32, 2 + 2 + 16),
 }
 
 

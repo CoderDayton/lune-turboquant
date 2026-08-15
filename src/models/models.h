@@ -1155,7 +1155,6 @@ struct llama_model_deepseek32 : public llama_model_base {
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
-
 struct llama_model_deepseek4 : public llama_model_base {
     llama_model_deepseek4(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
@@ -1340,6 +1339,15 @@ struct llama_model_dflash : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
+    // set when dflash.decoder_arch == "laguna": draft layers follow the Laguna
+    // decoder contract (softplus attn gate, per-aux feature norms, context K/V
+    // through input_layernorm, causal noise-block attention)
+    bool decoder_laguna = false;
+
+    // per-aux-feature RMSNorm weights stacked to [n_embd, n_aux], applied
+    // before concat + fc (Laguna drafters)
+    ggml_tensor * aux_norm = nullptr;
+
     template <bool is_enc>
     struct graph : public llm_graph_context {
         graph(const llama_model & model, const llm_graph_params & params);
@@ -1353,6 +1361,7 @@ struct llama_model_dflash : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
+
 
 
 struct llama_model_mistral4 : public llama_model_deepseek2 {
@@ -2336,3 +2345,29 @@ struct llama_model_step35 : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
+
+struct llm_build_eagle3_encode : public llm_graph_context {
+    llm_build_eagle3_encode(const llama_model & model, const llm_graph_params & params);
+private:
+    ggml_tensor * build_inp_embd() const;
+};
+
+struct llm_build_eagle3_decode : public llm_graph_context {
+    llm_build_eagle3_decode(const llama_model & model, const llm_graph_params & params);
+};
+
+struct llm_build_dflash_encode : public llm_graph_context {
+    llm_build_dflash_encode(const llama_model & model, const llm_graph_params & params);
+private:
+    ggml_tensor * build_inp_embd() const;
+};
+
+struct llm_build_dflash_decode : public llm_graph_context {
+    llm_build_dflash_decode(const llama_model & model, const llm_graph_params & params);
+};
+
+struct llm_build_openai_moe_iswa : public llm_graph_context {
+    llm_build_openai_moe_iswa(const llama_model & model, const llm_graph_params & params);
+};
+
+
