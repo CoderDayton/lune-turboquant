@@ -834,7 +834,11 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
                 switch (K->type) {
                     case GGML_TYPE_TURBO4_0: ggml_cuda_flash_attn_ext_mma_turbo_switch_ncols2<128, 128, GGML_TYPE_TURBO4_0, GGML_TYPE_TURBO4_0>(ctx, dst); return;
                     case GGML_TYPE_TURBO3_0: ggml_cuda_flash_attn_ext_mma_turbo_switch_ncols2<128, 128, GGML_TYPE_TURBO3_0, GGML_TYPE_TURBO3_0>(ctx, dst); return;
-                    case GGML_TYPE_TURBO2_0: ggml_cuda_flash_attn_ext_mma_turbo_switch_ncols2<128, 128, GGML_TYPE_TURBO2_0, GGML_TYPE_TURBO2_0>(ctx, dst); return;
+                    // turbo2 + head_dim 128: NO fused case. The fused turbo2 kernel produces
+                    // garbage (Nanbeige4.2-3B decode PPL 4678 vs 19.7 on VEC); the defect is not
+                    // yet located — the tile loader and dispatch match turbo3/turbo4, which are
+                    // correct. Route to VEC until the kernel is fixed. See the hd256 note below
+                    // for the separate performance reason turbo2 is excluded there.
                     default: break;
                 }
             }
@@ -846,8 +850,7 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
                     // default below). At 2-bit KV the fused path's GQA-pack saving is tiny while the
                     // dequant/no-pipeline overhead is unchanged, so it is neutral on high-BW GPUs and
                     // regresses ~1-2.5% on bandwidth-limited ones (tester @everson: Gemma-12B / RTX
-                    // 5060 Ti). VEC == baseline there. turbo2 + hd128 keeps fused (a +6.6..+69% depth
-                    // win on dense models); turbo3/turbo4 stay fused at both head dims.
+                    // 5060 Ti). VEC == baseline there. turbo3/turbo4 stay fused at both head dims.
                     default: break;
                 }
             }
