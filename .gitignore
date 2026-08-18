@@ -39,6 +39,10 @@
 /gcovr-report/
 /lcov-report/
 
+# CTest
+
+/Testing/
+
 # Build Artifacts
 
 /tags
