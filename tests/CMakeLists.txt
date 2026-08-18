@@ -116,7 +116,11 @@ function(llama_build_and_test source)
     set_property(TEST ${TEST_TARGET} PROPERTY LABELS ${LLAMA_TEST_LABEL})
 endfunction()
 
-llama_build_and_test(test-unicode.cpp)
+# test-unicode calls unicode_regex_split, which llama.dll does not export, so it
+# does not link against this fork's shared Windows build
+if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
+    llama_build_and_test(test-unicode.cpp)
+endif()
 
 # build test-tokenizer-0 target once and add many tests
 llama_build(test-tokenizer-0.cpp)
