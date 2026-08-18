@@ -28,6 +28,18 @@ constexpr float MAX_DOT_PRODUCT_ERROR_FP4 = 0.03f;
 constexpr float MAX_DOT_PRODUCT_ERROR_BINARY = 0.40f;
 constexpr float MAX_DOT_PRODUCT_ERROR_TERNARY = 0.15f;
 
+// Normalized MSE bounds for the TurboQuant KV-cache types, measured on Gaussian input
+// after undoing the WHT. These track the codebooks directly: a regression in the Lloyd-Max
+// tables or the rotation shows up here and nowhere else in this harness.
+constexpr float MAX_TURBO4_NORMALIZED_MSE = 0.012f;
+constexpr float MAX_TURBO3_NORMALIZED_MSE = 0.042f;
+constexpr float MAX_TURBO2_NORMALIZED_MSE = 0.140f;
+
+// WHT rotation group, matching QK_TURBO* in ggml-common.h.
+constexpr int TURBO_ROTATION_GROUP = 128;
+
+extern "C" void turbo_cpu_fwht_inverse(float * x, int group_size);
+
 static const char* RESULT_STR[] = {"ok", "FAILED"};
 
 
@@ -36,6 +48,45 @@ static void generate_data(float offset, size_t n, float * dst) {
     for (size_t i = 0; i < n; i++) {
         dst[i] = 0.1 + 2*cosf(i + offset);
     }
+}
+
+// Gaussian input, fixed seed. The turbo types quantize WHT-rotated vectors, whose
+// coordinates are Gaussian by construction, so their error is only meaningful on such data.
+static void generate_gaussian(size_t n, float * dst) {
+    uint64_t s = 0x2545F4914F6CDD1DULL;
+    auto next = [&s]() {
+        s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+        return (double) ((s >> 11) & ((1ULL << 53) - 1)) / (double) (1ULL << 53);
+    };
+    for (size_t i = 0; i < n; i++) {
+        double u1 = next(), u2 = next();
+        if (u1 < 1e-300) u1 = 1e-300;
+        dst[i] = (float) (sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2));
+    }
+}
+
+// Round-trip error for a turbo type, as MSE normalized by signal power.
+// Their to_float leaves the row WHT-rotated (the attention graph rotates Q to match via
+// GGML_OP_TURBO_WHT), so the inverse rotation has to be applied before comparing.
+static float turbo_normalized_error(const ggml_type_traits * qfns, const ggml_type_traits_cpu * qfns_cpu,
+                                    size_t test_size, const float * test_data) {
+    std::vector<uint8_t> tmp_q(std::max<size_t>(2*test_size, test_size * sizeof(float)));
+    std::vector<float> tmp_out(test_size);
+
+    qfns_cpu->from_float(test_data, tmp_q.data(), test_size);
+    qfns->to_float(tmp_q.data(), tmp_out.data(), test_size);
+
+    for (size_t off = 0; off + TURBO_ROTATION_GROUP <= test_size; off += TURBO_ROTATION_GROUP) {
+        turbo_cpu_fwht_inverse(tmp_out.data() + off, TURBO_ROTATION_GROUP);
+    }
+
+    double sq_err = 0.0, sq_sig = 0.0;
+    for (size_t i = 0; i < test_size; i++) {
+        const double e = (double) tmp_out[i] - (double) test_data[i];
+        sq_err += e * e;
+        sq_sig += (double) test_data[i] * test_data[i];
+    }
+    return (float) (sq_err / sq_sig);
 }
 
 // Calculate RMSE between two float arrays
@@ -149,13 +200,24 @@ static int test_vec_dot_q(bool verbose) {
             continue;
         }
 
-        // TurboQuant KV-cache types (TURBO2_0/TURBO3_0/TURBO4_0) intentionally keep
-        // their dequantized output in the WHT-rotated domain; the inverse WHT is
-        // applied separately via GGML_OP_TURBO_WHT in the attention graph. They do
-        // not round-trip through float space, so the total/reference/dot-product
-        // error tests in this harness are not applicable.
+        // TurboQuant KV-cache types keep their dequantized output in the WHT-rotated
+        // domain, so the reference and dot-product tests below do not apply. The
+        // round-trip error still does, once the rotation is undone.
         if (type == GGML_TYPE_TURBO2_0 || type == GGML_TYPE_TURBO3_0 || type == GGML_TYPE_TURBO4_0) {
-            printf("Testing %s (skipped: rotated-domain KV quant)\n", ggml_type_name(type));
+            std::vector<float> gauss(test_size);
+            generate_gaussian(test_size, gauss.data());
+
+            const float max_mse = type == GGML_TYPE_TURBO4_0 ? MAX_TURBO4_NORMALIZED_MSE
+                                : type == GGML_TYPE_TURBO3_0 ? MAX_TURBO3_NORMALIZED_MSE
+                                                             : MAX_TURBO2_NORMALIZED_MSE;
+
+            const float mse = turbo_normalized_error(qfns, qfns_cpu, test_size, gauss.data());
+            const bool failed = !(mse < max_mse);
+            num_failed += failed;
+            if (failed || verbose) {
+                printf("%5s normalized MSE: %s (%f, max %f)\n",
+                       ggml_type_name(type), RESULT_STR[failed], mse, max_mse);
+            }
             continue;
         }
 
