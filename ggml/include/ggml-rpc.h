@@ -7,8 +7,8 @@ extern "C" {
 #endif
 
 #define RPC_PROTO_MAJOR_VERSION    5
-#define RPC_PROTO_MINOR_VERSION    0
-#define RPC_PROTO_PATCH_VERSION    3
+#define RPC_PROTO_MINOR_VERSION    1
+#define RPC_PROTO_PATCH_VERSION    0
 
 #ifdef  __cplusplus
 // 102 = upstream 101 + TURBO_WHT (upstream already has LIGHTNING_INDEXER and DSV4_HC_*)
