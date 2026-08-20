@@ -507,10 +507,29 @@ llama_kv_cache::llama_kv_cache(
         const size_t memory_size_k = size_k_bytes();
         const size_t memory_size_v = size_v_bytes();
 
+        // Layer-adaptive modes give some layers a different type from the one
+        // that was asked for, so naming the request here would misreport the
+        // cache that was actually built - and the size beside it would not add
+        // up from the block layout the name implies.
+        auto type_label = [this](bool is_k) {
+            std::string s;
+            for (const auto & l : layers) {
+                const char * n = ggml_type_name(is_k ? l.k->type : l.v->type);
+                if (s.empty()) {
+                    s = n;
+                } else if (s != n && s.find(std::string("+") + n) == std::string::npos &&
+                           s.compare(0, strlen(n), n) != 0) {
+                    s += "+";
+                    s += n;
+                }
+            }
+            return s;
+        };
+
         LLAMA_LOG_INFO("%s: size = %7.2f MiB (%6u cells, %3d layers, %2u/%u seqs), K (%s): %7.2f MiB, V (%s): %7.2f MiB\n", __func__,
                 (float)(memory_size_k + memory_size_v) / (1024.0f * 1024.0f), kv_size, (int) layers.size(), n_seq_max, n_stream,
-                ggml_type_name(type_k), (float)memory_size_k / (1024.0f * 1024.0f),
-                ggml_type_name(type_v), (float)memory_size_v / (1024.0f * 1024.0f));
+                type_label(true).c_str(),  (float)memory_size_k / (1024.0f * 1024.0f),
+                type_label(false).c_str(), (float)memory_size_v / (1024.0f * 1024.0f));
     }
 
     // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
