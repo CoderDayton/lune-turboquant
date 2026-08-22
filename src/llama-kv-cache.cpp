@@ -576,12 +576,13 @@ llama_kv_cache::llama_kv_cache(
                 hparams.n_embd_head_v() % 64 == 0;
         }
 
-        // always create Hadamard rotation tensors for DeepSeek V3.2 DSA lightning
-        // indexer: this is a functional requirement for the model, not optional
-        // tuning, so it overrides the default-off policy (still respects the hard
+        // always create Hadamard rotation tensors for the DSA lightning indexers:
+        // this is a functional requirement for the model, not optional tuning, so
+        // it overrides the default-off policy (still respects the hard
         // LLAMA_ATTN_ROT_DISABLE lock-out).
-        if (!attn_rot_disable && (model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4) &&
-            hparams.n_embd_head_k_full == hparams.indexer_head_size) {
+        if (!attn_rot_disable && (model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4 ||
+                model.arch == LLM_ARCH_GLM_DSA || model.arch == LLM_ARCH_DOTS3NOTE) &&
+                hparams.n_embd_head_k_full == hparams.indexer_head_size) {
             attn_rot_k = true;
         }
     }
