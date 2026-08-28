@@ -177,16 +177,17 @@ static void ggml_cuda_flash_attn_ext_mma_turbo_switch_ncols2(ggml_backend_cuda_c
     ggml_cuda_flash_attn_ext_mma_turbo_case<DKQ, DV, 8, 1, type_K, type_V>(ctx, dst); // ncols2 = 1 -> (8,1)
 }
 
-// Env latch for the fused turbo4 MMA decode path. DEFAULT OFF.
+// Env latch for the fused turbo MMA decode path. DEFAULT ON; GGML_TURBO_MMA_FUSED=0
+// is the kill-switch that routes turbo KV back to the VEC kernels.
 //
 // The MMA path is correctness-validated (coherent output, KLD == VEC baseline 0.008396)
-// and faster than VEC at every depth (beats rival "buun"), BUT it is NOT bit/token-identical
-// to the VEC reference: MMA and VEC accumulate the P·V (VKQ) reduction in f16 with different
+// and faster than VEC at every depth, BUT it is NOT bit/token-identical to the VEC
+// reference: MMA and VEC accumulate the P*V (VKQ) reduction in f16 with different
 // reduction trees (tensor-core fragment order vs per-thread VEC order), so a near-tie greedy
 // token can flip (~1 in ~25 tokens on a hard tie). This is the same irreducible f16-order
-// difference that exists between the base f16-MMA and f16-VEC kernels — not a regression — but
-// it fails strict token-identity. We therefore keep VEC the default and expose the faster MMA
-// path as opt-in via GGML_TURBO_MMA_FUSED=1.
+// difference that exists between the base f16-MMA and f16-VEC kernels - not a regression.
+// Because the path is on by default, that token-identity caveat applies by default: set
+// GGML_TURBO_MMA_FUSED=0 when a run must reproduce the VEC reference exactly.
 static bool ggml_cuda_turbo_mma_fused() {
     static const bool v = []{
         const char * s = getenv("GGML_TURBO_MMA_FUSED");
@@ -819,7 +820,7 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
     // Routes turbo4-K==turbo4-V, D in {128,256}, decode (Q->ne[1] <= 4) onto the GQA-packed
     // MMA path (KV read once per head-group instead of per query head). Q is ALREADY
     // graph-rotated (src/llama-graph.cpp) and the FA output is inverse-rotated there — this
-    // path does NO inline FWHT and NO src swap. Default OFF (env unset / !=1) falls straight
+    // path does NO inline FWHT and NO src swap. On by default;
     // GGML_TURBO_MMA_FUSED=0 falls straight through to the original VEC dispatch (kill-switch).
     {
         const ggml_tensor * Q = dst->src[0];
@@ -834,11 +835,10 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
                 switch (K->type) {
                     case GGML_TYPE_TURBO4_0: ggml_cuda_flash_attn_ext_mma_turbo_switch_ncols2<128, 128, GGML_TYPE_TURBO4_0, GGML_TYPE_TURBO4_0>(ctx, dst); return;
                     case GGML_TYPE_TURBO3_0: ggml_cuda_flash_attn_ext_mma_turbo_switch_ncols2<128, 128, GGML_TYPE_TURBO3_0, GGML_TYPE_TURBO3_0>(ctx, dst); return;
-                    // turbo2 + head_dim 128: NO fused case. The fused turbo2 kernel produces
-                    // garbage (Nanbeige4.2-3B decode PPL 4678 vs 19.7 on VEC); the defect is not
-                    // yet located — the tile loader and dispatch match turbo3/turbo4, which are
-                    // correct. Route to VEC until the kernel is fixed. See the hd256 note below
-                    // for the separate performance reason turbo2 is excluded there.
+                    // turbo2 + head_dim 128: fused. The earlier "produces garbage" defect was
+                    // in the turbo2 tile loader's second-index derivation, not the dispatch;
+                    // see flash_attn_ext_turbo2_load_tile in fattn-mma-f16.cuh.
+                    case GGML_TYPE_TURBO2_0: ggml_cuda_flash_attn_ext_mma_turbo_switch_ncols2<128, 128, GGML_TYPE_TURBO2_0, GGML_TYPE_TURBO2_0>(ctx, dst); return;
                     default: break;
                 }
             }

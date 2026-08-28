@@ -583,9 +583,8 @@ static __device__ __forceinline__ void flash_attn_ext_turbo3_load_tile(
 }
 
 // turbo2 (2-bit PolarQuant) tile loader. Plain 2-bit indices (qs, 4/byte), no signs.
-static __constant__ float TURBO_CENTROIDS_2BIT_FATTN[4] = {
-    -0.133462f, -0.039994f, 0.039994f, 0.133462f
-};
+// Codebook comes from turbo-quant.cuh (TURBO_CENTROIDS_2BIT) via turbo2_dequant_element;
+// there is deliberately no local copy of the 2-bit table here.
 template<int stride_tile, int nbatch_fa, int nthreads, bool oob_check>
 static __device__ __forceinline__ void flash_attn_ext_turbo2_load_tile(
         const char * const __restrict__ KV_raw, half2 * const __restrict__ tile_KV,
@@ -606,12 +605,15 @@ static __device__ __forceinline__ void flash_attn_ext_turbo2_load_tile(
             const int j0    = elem0 % QK_TURBO2;
             const block_turbo2_0 * blk = (const block_turbo2_0 *)(row_ptr) + ib;
             const float   norm    = __half2float(blk->norm);
-            const uint8_t qs_byte = blk->qs[j0 / 4];
-            const int     shift   = (j0 % 4) * 2;
-            const uint8_t idx0 = (qs_byte >> shift)     & 0x3;
-            const uint8_t idx1 = (qs_byte >> (shift+2)) & 0x3;
-            const half lo = __float2half(TURBO_CENTROIDS_2BIT_FATTN[idx0] * norm);
-            const half hi = __float2half(TURBO_CENTROIDS_2BIT_FATTN[idx1] * norm);
+            // Reuse the canonical per-element dequant (turbo-quant.cuh) rather than
+            // re-deriving the second index from the first one's shift. The hand-rolled
+            // "shift+2 off a single hoisted qs byte" form produced wrong results here
+            // (test-backend-ops FLASH_ATTN_EXT turbo2/turbo2 hsk=128: 376/752), even
+            // though it is arithmetically equivalent for the even j0 this loop produces.
+            // memcheck/racecheck/initcheck are all clean on both forms, so the cause is
+            // not OOB, a race, or uninitialized memory. Keep the single source of truth.
+            const half lo = __float2half(turbo2_dequant_element(blk, j0,     norm));
+            const half hi = __float2half(turbo2_dequant_element(blk, j0 + 1, norm));
             tile_KV[row*stride_tile + c] = __halves2half2(lo, hi);
         }
     }
