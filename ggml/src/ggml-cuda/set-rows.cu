@@ -234,6 +234,16 @@ static void set_rows_cuda(
 //   7. Parallel reconstruction norm (same pattern as step 2)
 //   8. Write corrected norm (one thread per sub-block)
 
+// Prototype knob: TURBO_UNBIAS=1 scales the reconstruction by 1/cos(theta) so the
+// dequantized vector projects onto the input with gain 1. Mirrors the CPU codec.
+static bool turbo_unbias_enabled() {
+    static const bool cached = [] {
+        const char * env = getenv("TURBO_UNBIAS");
+        return env && env[0] == '1';
+    }();
+    return cached;
+}
+
 template <typename idx_t, int GROUP_SIZE>
 __launch_bounds__(128)  // max of 128 or 64
 static __global__ void k_set_rows_turbo3(
@@ -254,7 +264,8 @@ static __global__ void k_set_rows_turbo3(
         const int64_t s12,
         const int64_t s1,
         const int64_t s2,
-        const int64_t s3) {
+        const int64_t s3,
+        const bool unbias) {
 
     static_assert(GROUP_SIZE == 128 || GROUP_SIZE == 64, "GROUP_SIZE must be 128 or 64");
 
@@ -385,23 +396,36 @@ static __global__ void k_set_rows_turbo3(
     if (lane % 8 == 0) blk->signs[global_signs_byte] = signs_byte;
 
     // ---- Step 7: Reconstruction norm (parallel, same pattern as step 2) ----
+    __shared__ float warp_accum_dot[n_warps];
     const float c = TURBO_CENTROIDS_3BIT[idx];
     float rc = c * c;
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+    float rd = rv * c;
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
         rc += __shfl_xor_sync(0xffffffff, rc, offset);
-    if (j % WARP_SIZE == 0)
-        warp_accum[j / WARP_SIZE] = rc;
+        rd += __shfl_xor_sync(0xffffffff, rd, offset);
+    }
+    if (j % WARP_SIZE == 0) {
+        warp_accum[j / WARP_SIZE]     = rc;
+        warp_accum_dot[j / WARP_SIZE] = rd;
+    }
     __syncthreads();
 
     __shared__ float s_recon_sq;
+    __shared__ float s_recon_dot;
     if (j == 0) {
         float total = 0.0f;
-        for (int w = 0; w < n_warps; w++) total += warp_accum[w];
-        s_recon_sq = total;
+        float total_dot = 0.0f;
+        for (int w = 0; w < n_warps; w++) {
+            total     += warp_accum[w];
+            total_dot += warp_accum_dot[w];
+        }
+        s_recon_sq  = total;
+        s_recon_dot = total_dot;
     }
     __syncthreads();
     const float recon_norm     = sqrtf(s_recon_sq);
-    const float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    if (unbias && s_recon_dot > 1e-10f) corrected_norm = grp_norm / s_recon_dot;
 
     // ---- Step 8: Write corrected norm (one per turbo3 block) ----
     if (elem_in_block == 0) blk->norm = __float2half(corrected_norm);
@@ -439,7 +463,8 @@ static __global__ void k_set_rows_turbo3_tail(
         const int64_t s1,
         const int64_t s2,
         const int64_t s3,
-        const int tail_size) {
+        const int tail_size,
+        const bool unbias) {
 
     const int j = threadIdx.x;  // 0 .. tail_size-1
 
@@ -511,22 +536,36 @@ static __global__ void k_set_rows_turbo3_tail(
     if (lane % 8 == 0) blk->signs[signs_byte_idx] = signs_byte;
 
     // ---- Reconstruction norm ----
+    __shared__ float warp_accum_dot[4];
     const float c = TURBO_CENTROIDS_3BIT[idx];
     float rc = c * c;
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+    float rd = rv * c;
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
         rc += __shfl_xor_sync(0xffffffff, rc, offset);
-    if (lane == 0) warp_accum[warp_id] = rc;
+        rd += __shfl_xor_sync(0xffffffff, rd, offset);
+    }
+    if (lane == 0) {
+        warp_accum[warp_id]     = rc;
+        warp_accum_dot[warp_id] = rd;
+    }
     __syncthreads();
 
     __shared__ float s_recon_sq;
+    __shared__ float s_recon_dot;
     if (j == 0) {
         float total = 0.0f;
-        for (int w = 0; w < n_warps; w++) total += warp_accum[w];
-        s_recon_sq = total;
+        float total_dot = 0.0f;
+        for (int w = 0; w < n_warps; w++) {
+            total     += warp_accum[w];
+            total_dot += warp_accum_dot[w];
+        }
+        s_recon_sq  = total;
+        s_recon_dot = total_dot;
     }
     __syncthreads();
     const float recon_norm     = sqrtf(s_recon_sq);
-    const float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    if (unbias && s_recon_dot > 1e-10f) corrected_norm = grp_norm / s_recon_dot;
 
     if (lane == 0) blk->norm = __float2half(corrected_norm);
 
@@ -569,6 +608,8 @@ static void set_rows_cuda_turbo3(
     // InnerQ: check/finalize calibration before kernel launch
     turbo_innerq_check_finalize(group_size, ne00);
 
+    const bool unbias = turbo_unbias_enabled();
+
     // Launch 1: full groups with WHT rotation
     if (n_full_groups > 0) {
         const int64_t ne_total = n_full_groups * ne01 * ne02 * ne03;
@@ -577,13 +618,13 @@ static void set_rows_cuda_turbo3(
                 src0_d, src1_d, (block_turbo3_0 *)dst->data,
                 ne00, ne01, ne10, ne11, ne12, ne13,
                 s01, s02, s03, s10, s11, s12,
-                nb1, nb2, nb3);
+                nb1, nb2, nb3, unbias);
         } else {
             k_set_rows_turbo3<idx_t, 64><<<(int)ne_total, 64, 0, stream>>>(
                 src0_d, src1_d, (block_turbo3_0 *)dst->data,
                 ne00, ne01, ne10, ne11, ne12, ne13,
                 s01, s02, s03, s10, s11, s12,
-                nb1, nb2, nb3);
+                nb1, nb2, nb3, unbias);
         }
     }
 
@@ -596,7 +637,7 @@ static void set_rows_cuda_turbo3(
             src0_d, src1_d, (block_turbo3_0 *)dst->data,
             ne00, ne01, ne10, ne11, ne12, ne13,
             s01, s02, s03, s10, s11, s12,
-            nb1, nb2, nb3, tail_size);
+            nb1, nb2, nb3, tail_size, unbias);
     }
 }
 
@@ -624,7 +665,8 @@ static __global__ void k_set_rows_turbo2(
         const int64_t s12,
         const int64_t s1,
         const int64_t s2,
-        const int64_t s3) {
+        const int64_t s3,
+        const bool unbias) {
 
     static_assert(GROUP_SIZE == 128 || GROUP_SIZE == 64, "GROUP_SIZE must be 128 or 64");
 
@@ -744,23 +786,36 @@ static __global__ void k_set_rows_turbo2(
     // No signs packing needed for turbo2
 
     // ---- Step 7: Reconstruction norm ----
+    __shared__ float warp_accum_dot[n_warps];
     const float c = TURBO_CENTROIDS_2BIT[idx];
     float rc = c * c;
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+    float rd = rv * c;
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
         rc += __shfl_xor_sync(0xffffffff, rc, offset);
-    if (j % WARP_SIZE == 0)
-        warp_accum[j / WARP_SIZE] = rc;
+        rd += __shfl_xor_sync(0xffffffff, rd, offset);
+    }
+    if (j % WARP_SIZE == 0) {
+        warp_accum[j / WARP_SIZE]     = rc;
+        warp_accum_dot[j / WARP_SIZE] = rd;
+    }
     __syncthreads();
 
     __shared__ float s_recon_sq;
+    __shared__ float s_recon_dot;
     if (j == 0) {
         float total = 0.0f;
-        for (int w = 0; w < n_warps; w++) total += warp_accum[w];
-        s_recon_sq = total;
+        float total_dot = 0.0f;
+        for (int w = 0; w < n_warps; w++) {
+            total     += warp_accum[w];
+            total_dot += warp_accum_dot[w];
+        }
+        s_recon_sq  = total;
+        s_recon_dot = total_dot;
     }
     __syncthreads();
     const float recon_norm     = sqrtf(s_recon_sq);
-    const float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    if (unbias && s_recon_dot > 1e-10f) corrected_norm = grp_norm / s_recon_dot;
 
     // ---- Step 8: Write corrected norm (one per turbo2 block) ----
     if (elem_in_block == 0) blk->norm = __float2half(corrected_norm);
@@ -791,7 +846,8 @@ static __global__ void k_set_rows_turbo2_tail(
         const int64_t s1,
         const int64_t s2,
         const int64_t s3,
-        const int tail_size) {
+        const int tail_size,
+        const bool unbias) {
 
     const int j = threadIdx.x;
 
@@ -856,22 +912,36 @@ static __global__ void k_set_rows_turbo2_tail(
     if (lane % 4 == 0) blk->qs[lane / 4] = qs_byte;
 
     // ---- Reconstruction norm ----
+    __shared__ float warp_accum_dot[4];
     const float c = TURBO_CENTROIDS_2BIT[idx];
     float rc = c * c;
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+    float rd = rv * c;
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
         rc += __shfl_xor_sync(0xffffffff, rc, offset);
-    if (lane == 0) warp_accum[warp_id] = rc;
+        rd += __shfl_xor_sync(0xffffffff, rd, offset);
+    }
+    if (lane == 0) {
+        warp_accum[warp_id]     = rc;
+        warp_accum_dot[warp_id] = rd;
+    }
     __syncthreads();
 
     __shared__ float s_recon_sq;
+    __shared__ float s_recon_dot;
     if (j == 0) {
         float total = 0.0f;
-        for (int w = 0; w < n_warps; w++) total += warp_accum[w];
-        s_recon_sq = total;
+        float total_dot = 0.0f;
+        for (int w = 0; w < n_warps; w++) {
+            total     += warp_accum[w];
+            total_dot += warp_accum_dot[w];
+        }
+        s_recon_sq  = total;
+        s_recon_dot = total_dot;
     }
     __syncthreads();
     const float recon_norm     = sqrtf(s_recon_sq);
-    const float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    if (unbias && s_recon_dot > 1e-10f) corrected_norm = grp_norm / s_recon_dot;
 
     if (lane == 0) blk->norm = __float2half(corrected_norm);
 
@@ -913,6 +983,8 @@ static void set_rows_cuda_turbo2(
     // InnerQ: check/finalize calibration before kernel launch
     turbo_innerq_check_finalize(group_size, ne00);
 
+    const bool unbias = turbo_unbias_enabled();
+
     if (n_full_groups > 0) {
         const int64_t ne_total = n_full_groups * ne01 * ne02 * ne03;
         if (group_size == 128) {
@@ -920,13 +992,13 @@ static void set_rows_cuda_turbo2(
                 src0_d, src1_d, (block_turbo2_0 *)dst->data,
                 ne00, ne01, ne10, ne11, ne12, ne13,
                 s01, s02, s03, s10, s11, s12,
-                nb1, nb2, nb3);
+                nb1, nb2, nb3, unbias);
         } else {
             k_set_rows_turbo2<idx_t, 64><<<(int)ne_total, 64, 0, stream>>>(
                 src0_d, src1_d, (block_turbo2_0 *)dst->data,
                 ne00, ne01, ne10, ne11, ne12, ne13,
                 s01, s02, s03, s10, s11, s12,
-                nb1, nb2, nb3);
+                nb1, nb2, nb3, unbias);
         }
     }
 
@@ -937,7 +1009,7 @@ static void set_rows_cuda_turbo2(
             src0_d, src1_d, (block_turbo2_0 *)dst->data,
             ne00, ne01, ne10, ne11, ne12, ne13,
             s01, s02, s03, s10, s11, s12,
-            nb1, nb2, nb3, tail_size);
+            nb1, nb2, nb3, tail_size, unbias);
     }
 }
 
@@ -967,7 +1039,8 @@ static __global__ void k_set_rows_turbo4(
         const int64_t s12,
         const int64_t s1,
         const int64_t s2,
-        const int64_t s3) {
+        const int64_t s3,
+        const bool unbias) {
 
     // blockIdx.x = flat block index; threadIdx.x = element within block (0..127)
     const int j = threadIdx.x;
@@ -1072,23 +1145,36 @@ static __global__ void k_set_rows_turbo4(
     }
 
     // ---- Step 7: Reconstruction norm (parallel) ----
+    __shared__ float warp_accum_dot[n_warps];
     const float c = TURBO_CENTROIDS_4BIT[idx];
     float rc = c * c;
-    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1)
+    float rd = rv * c;
+    for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
         rc += __shfl_xor_sync(0xffffffff, rc, offset);
-    if (j % WARP_SIZE == 0)
-        warp_accum[j / WARP_SIZE] = rc;
+        rd += __shfl_xor_sync(0xffffffff, rd, offset);
+    }
+    if (j % WARP_SIZE == 0) {
+        warp_accum[j / WARP_SIZE]     = rc;
+        warp_accum_dot[j / WARP_SIZE] = rd;
+    }
     __syncthreads();
 
     __shared__ float s_recon_sq;
+    __shared__ float s_recon_dot;
     if (j == 0) {
         float total = 0.0f;
-        for (int w = 0; w < n_warps; w++) total += warp_accum[w];
-        s_recon_sq = total;
+        float total_dot = 0.0f;
+        for (int w = 0; w < n_warps; w++) {
+            total     += warp_accum[w];
+            total_dot += warp_accum_dot[w];
+        }
+        s_recon_sq  = total;
+        s_recon_dot = total_dot;
     }
     __syncthreads();
     const float recon_norm     = sqrtf(s_recon_sq);
-    const float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+    if (unbias && s_recon_dot > 1e-10f) corrected_norm = grp_norm / s_recon_dot;
 
     // ---- Step 8: Write corrected norm and zero rnorm (one thread) ----
     if (j == 0) {
@@ -1127,13 +1213,15 @@ static void set_rows_cuda_turbo4(
     // InnerQ: check/finalize calibration before kernel launch
     turbo_innerq_check_finalize(QK_TURBO4, ne00);
 
+    const bool unbias = turbo_unbias_enabled();
+
     if (n_blocks > 0) {
         const int64_t ne_total = n_blocks * ne01 * ne02 * ne03;
         k_set_rows_turbo4<idx_t><<<(int)ne_total, 128, 0, stream>>>(
             src0_d, src1_d, (block_turbo4_0 *)dst->data,
             ne00, ne01, ne10, ne11, ne12, ne13,
             s01, s02, s03, s10, s11, s12,
-            nb1, nb2, nb3);
+            nb1, nb2, nb3, unbias);
     }
 }
 

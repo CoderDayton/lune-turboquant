@@ -278,6 +278,19 @@ GGML_API void turbo_cpu_fwht_inverse(float * x, int group_size) {
 
 /* ---------- TURBO3_0: 3-bit PolarQuant with WHT rotation ---------- */
 
+/* Prototype knob: TURBO_UNBIAS=1 scales the reconstruction by 1/cos(theta) so the
+ * dequantized vector projects onto the input with gain 1. The default norm-preserving
+ * scale keeps ||out|| == ||in|| but leaves gain = cos(theta) < 1, which attenuates the
+ * attention output. Unbiasing trades a little MSE for that attenuation. */
+static int turbo_unbias_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char * env = getenv("TURBO_UNBIAS");
+        cached = (env && env[0] == '1') ? 1 : 0;
+    }
+    return cached;
+}
+
 void quantize_row_turbo3_0_ref(const float * GGML_RESTRICT x, block_turbo3_0 * GGML_RESTRICT y, int64_t k) {
     assert(k % QK_TURBO3 == 0);
 
@@ -316,6 +329,7 @@ void quantize_row_turbo3_0_ref(const float * GGML_RESTRICT x, block_turbo3_0 * G
 
         // 4. Quantize + pack into sub-blocks
         float recon_sq = 0.0f;
+        float recon_dot = 0.0f;
         for (int b = 0; b < blocks_per_group; b++) {
             block_turbo3_0 * blk = &grp_dst[b];
             const int off = b * QK_TURBO3;
@@ -329,13 +343,17 @@ void quantize_row_turbo3_0_ref(const float * GGML_RESTRICT x, block_turbo3_0 * G
                 if (idx & 0x4) {
                     blk->signs[j / 8] |= (1 << (j % 8));
                 }
-                recon_sq += CENTROIDS_3BIT[idx] * CENTROIDS_3BIT[idx];
+                recon_sq  += CENTROIDS_3BIT[idx] * CENTROIDS_3BIT[idx];
+                recon_dot += buf[off + j] * CENTROIDS_3BIT[idx];
             }
         }
 
         // 5. Corrected norm: grp_norm / recon_norm (matching CUDA kernel)
         float recon_norm = sqrtf(recon_sq);
         float corrected = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+        if (turbo_unbias_enabled() && recon_dot > 1e-10f) {
+            corrected = grp_norm / recon_dot;
+        }
         for (int b = 0; b < blocks_per_group; b++) {
             grp_dst[b].norm = GGML_FP32_TO_FP16(corrected);
         }
@@ -411,6 +429,7 @@ void quantize_row_turbo2_0_ref(const float * GGML_RESTRICT x, block_turbo2_0 * G
 
         /* 4. Quantize + pack into sub-blocks */
         float recon_sq = 0.0f;
+        float recon_dot = 0.0f;
         for (int b = 0; b < blocks_per_group; b++) {
             block_turbo2_0 * blk = &grp_dst[b];
             const int off = b * QK_TURBO2;
@@ -420,13 +439,17 @@ void quantize_row_turbo2_0_ref(const float * GGML_RESTRICT x, block_turbo2_0 * G
             for (int j = 0; j < QK_TURBO2; j++) {
                 int idx = nearest_centroid_2bit(buf[off + j]);
                 blk->qs[j / 4] |= (idx & 0x3) << ((j % 4) * 2);
-                recon_sq += CENTROIDS_2BIT[idx] * CENTROIDS_2BIT[idx];
+                recon_sq  += CENTROIDS_2BIT[idx] * CENTROIDS_2BIT[idx];
+                recon_dot += buf[off + j] * CENTROIDS_2BIT[idx];
             }
         }
 
         /* 5. Corrected norm */
         float recon_norm = sqrtf(recon_sq);
         float corrected = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+        if (turbo_unbias_enabled() && recon_dot > 1e-10f) {
+            corrected = grp_norm / recon_dot;
+        }
         for (int b = 0; b < blocks_per_group; b++) {
             grp_dst[b].norm = GGML_FP32_TO_FP16(corrected);
         }
@@ -508,11 +531,16 @@ void quantize_row_turbo4_0_ref(const float * GGML_RESTRICT x, block_turbo4_0 * G
 
         /* Norm correction */
         float recon_norm_sq = 0.0f;
+        float recon_dot = 0.0f;
         for (int i = 0; i < d; i++) {
             recon_norm_sq += CENTROIDS_4BIT[indices[i]] * CENTROIDS_4BIT[indices[i]];
+            recon_dot     += rotated[i] * CENTROIDS_4BIT[indices[i]];
         }
         float recon_norm = sqrtf(recon_norm_sq);
         float corrected_norm = (recon_norm > 1e-10f) ? norm / recon_norm : norm;
+        if (turbo_unbias_enabled() && recon_dot > 1e-10f) {
+            corrected_norm = norm / recon_dot;
+        }
         y[block].norm = GGML_FP32_TO_FP16(corrected_norm);
 #else
         /* Step 3: 3-bit quantization (8 centroids) */
