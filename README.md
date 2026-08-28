@@ -7,7 +7,9 @@
 <b>TurboQuant KV cache compression for llama.cpp</b>
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-
+[![CI](https://img.shields.io/github/actions/workflow/status/CoderDayton/lune-turboquant/build-cpu.yml?branch=main&label=CI)](https://github.com/CoderDayton/lune-turboquant/actions/workflows/build-cpu.yml)
+[![Upstream](https://img.shields.io/badge/upstream-ggml--org%2Fllama.cpp-informational)](https://github.com/ggml-org/llama.cpp)
+[![Last commit](https://img.shields.io/github/last-commit/CoderDayton/lune-turboquant)](https://github.com/CoderDayton/lune-turboquant/commits/main)
 
 </div>
 
