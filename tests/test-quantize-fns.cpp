@@ -38,6 +38,9 @@ constexpr float MAX_TURBO2_NORMALIZED_MSE = 0.140f;
 // WHT rotation group, matching QK_TURBO* in ggml-common.h.
 constexpr int TURBO_ROTATION_GROUP = 128;
 
+// M_PI is not in the C++ standard - MSVC and clang-cl only expose it with _USE_MATH_DEFINES
+constexpr double TURBO_PI = 3.14159265358979323846;
+
 extern "C" void turbo_cpu_fwht_inverse(float * x, int group_size);
 
 static const char* RESULT_STR[] = {"ok", "FAILED"};
@@ -61,7 +64,7 @@ static void generate_gaussian(size_t n, float * dst) {
     for (size_t i = 0; i < n; i++) {
         double u1 = next(), u2 = next();
         if (u1 < 1e-300) u1 = 1e-300;
-        dst[i] = (float) (sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2));
+        dst[i] = (float) (sqrt(-2.0 * log(u1)) * cos(2.0 * TURBO_PI * u2));
     }
 }
 
