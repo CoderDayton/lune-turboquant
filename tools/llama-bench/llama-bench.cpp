@@ -1427,7 +1427,7 @@ struct cmd_params_instance {
             merged.reserve(merged.size() + (size_t) n_cpu_moe + 1);
 
             for (int i = 0; i < n_cpu_moe; ++i) {
-                patterns.push_back(llm_ffn_exps_block_regex(i));
+                patterns.push_back(llm_ffn_block_regex(i, LLM_FFN_EXPS_REGEX));
                 merged.push_back({ patterns.back().c_str(),
                                 ggml_backend_cpu_buffer_type() });
             }
@@ -2572,6 +2572,7 @@ int llama_bench(int argc, char ** argv) {
                 &fit_moe_cache,
                 margins.data(),
                 inst.fit_min_ctx,
+                nullptr,
                 params.verbose ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
             if (fit_status != COMMON_PARAMS_FIT_STATUS_SUCCESS) {
                 // Never report PP/TG numbers for a failed fit. The logger is

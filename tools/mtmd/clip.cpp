@@ -819,8 +819,6 @@ ggml_tensor * clip_graph::build_attn(
 }
 
 // implementation of the 2D RoPE without adding a new op in ggml
-// this is not efficient (use double the memory), but works on all backends
-// TODO: there was a more efficient which relies on ggml_view and ggml_rope_ext_inplace, but the rope inplace does not work well with non-contiguous tensors ; we should fix that and revert back to the original implementation in https://github.com/ggml-org/llama.cpp/pull/13065
 ggml_tensor * clip_graph::build_rope_2d(
     ggml_context * ctx0,
     ggml_tensor * cur,
@@ -829,9 +827,7 @@ ggml_tensor * clip_graph::build_rope_2d(
     const float freq_base,
     const bool interleave_freq
 ) {
-    const int64_t n_dim  = cur->ne[0];
-    const int64_t n_head = cur->ne[1];
-    const int64_t n_pos  = cur->ne[2];
+    const int64_t n_dim = cur->ne[0];
 
     // for example, if we have cur tensor of shape (n_dim=8, n_head, n_pos)
     // we will have a list of 4 inv_freq: 1e-0, 1e-1, 1e-2, 1e-3
@@ -845,46 +841,30 @@ ggml_tensor * clip_graph::build_rope_2d(
                                 ? std::pow(freq_base, (float)-2/n_dim)
                                 : 1.0;
 
-    // first half
-    ggml_tensor * first;
-    {
-        first = ggml_view_3d(ctx0, cur,
-            n_dim/2, n_head, n_pos,
-            cur->nb[1],
-            cur->nb[2],
-            0);
-        first = ggml_rope_ext(
-            ctx0,
-            first,
-            pos_a,      // positions
-            nullptr,    // freq factors
-            n_dim/2,    // n_dims
-            0, 0, freq_base,
-            1.0f, 0.0f, 1.0f, 0.0f, 0.0f
-        );
-    }
+    // first half, dims [0, n_dim/2)
+    cur = ggml_rope_ext(
+        ctx0,
+        cur,
+        pos_a,      // positions
+        nullptr,    // freq factors
+        n_dim/2,    // n_dims
+        0, 0, freq_base,
+        1.0f, 0.0f, 1.0f, 0.0f, 0.0f
+    );
 
-    // second half
-    ggml_tensor * second;
-    {
-        second = ggml_view_3d(ctx0, cur,
-            n_dim/2, n_head, n_pos,
-            cur->nb[1],
-            cur->nb[2],
-            n_dim/2 * ggml_element_size(cur));
-        second = ggml_rope_ext(
-            ctx0,
-            second,
-            pos_b,      // positions
-            nullptr,    // freq factors
-            n_dim/2,    // n_dims
-            0, 0, freq_base,
-            freq_scale_odd,
-            0.0f, 1.0f, 0.0f, 0.0f
-        );
-    }
+    // second half, dims [n_dim/2, n_dim)
+    cur = ggml_rope_ext(
+        ctx0,
+        cur,
+        pos_b,      // positions
+        nullptr,    // freq factors
+        n_dim/2,    // n_dims
+        0, 0, freq_base,
+        freq_scale_odd,
+        0.0f, 1.0f, 0.0f, 0.0f
+    );
+    cur = ggml_rope_set_offset(cur, n_dim/2);
 
-    cur = ggml_concat(ctx0, first, second, 0);
     return cur;
 }
 
@@ -1440,20 +1420,18 @@ struct clip_model_loader {
                         hparams.image_pad_color     = {122, 116, 104};
                         if (!hparams.image_res_candidates.empty()) {
                             hparams.image_resize_pad  = PAD_CEIL;
-                            hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+                            hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         } else {
                             // llava-1.6 default params
                             hparams.image_pad_ov         = PAD_NONE;
                             hparams.image_pad_rf         = PAD_CEIL;
                             hparams.image_pad_color_rf   = {122, 116, 104};
-                            hparams.image_resize_algo_rf = RESIZE_ALGO_BICUBIC;
-                            hparams.image_resize_algo_ov = RESIZE_ALGO_BILINEAR;
                         }
                     } break;
                 case PROJECTOR_TYPE_GLM_EDGE:
                     {
                         hparams.image_resize_pad  = PAD_CEIL;
-                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                     } break;
                 case PROJECTOR_TYPE_MINICPMV:
                     {
@@ -1510,6 +1488,7 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_IDEFICS3:
                     {
                         // use default llava-uhd preprocessing params
+                        hparams.image_resize_algo = RESIZE_ALGO_LANCZOS;
                         get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);
                         get_u32(KEY_PREPROC_IMAGE_SIZE, hparams.image_longest_edge, false);
                         hparams.set_limit_image_tokens();
@@ -1536,7 +1515,7 @@ struct clip_model_loader {
                         // ref: https://huggingface.co/mistral-community/pixtral-12b/blob/main/preprocessor_config.json
                         // TODO: verify the image_min_tokens
                         hparams.n_merge = 1; // the original pixtral does not use patch merging
-                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         hparams.rope_theta = 10000.0f;
                         get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
                         hparams.set_limit_image_tokens(8, 1024);
@@ -1564,7 +1543,7 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_DOTS3NOTE_V:
                     {
                         hparams.rope_theta = 10000.0f;
-                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge);
                         get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels);
                         get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels);
@@ -1582,7 +1561,7 @@ struct clip_model_loader {
                     } break;
                 case PROJECTOR_TYPE_KIMIVL:
                     {
-                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         hparams.rope_theta = 10000.0f;
                         get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);
                         // TODO: check kimivl preprocessor for exact values
@@ -1621,7 +1600,7 @@ struct clip_model_loader {
                     {
                         hparams.rope_theta = 100.0f;
                         hparams.n_merge = 3; // pooling_kernel_size
-                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);
                         if (model.proj_type == PROJECTOR_TYPE_GEMMA4UV) {
                             // for "unified" variant, we directly use a bigger patch size, because the "token merging" is done directly on conv layer
@@ -1638,6 +1617,7 @@ struct clip_model_loader {
                         // Gemma3n uses MobileNetV5 which produces 256 tokens (16x16)
                         // Similar configuration to Gemma3
                         hparams.n_merge = 1;  // MobileNetV5 handles resizing internally
+                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
                         get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);
                     } break;
                 case PROJECTOR_TYPE_QWEN2VL:
@@ -1645,7 +1625,7 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_QWEN3VL:
                     {
                         hparams.n_merge = 2; // default value for Qwen 2 and 2.5
-                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
                         get_u32(KEY_WIN_ATTN_PATTERN, hparams.n_wa_pattern, model.proj_type == PROJECTOR_TYPE_QWEN25VL); // only 2.5 requires it
                         // ref: https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct/blob/main/preprocessor_config.json
@@ -1661,7 +1641,7 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_MINIMAX_M3:
                     {
                         hparams.n_merge = 2; // spatial_merge_size
-                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         hparams.image_resize_pad  = PAD_NONE;
                         get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
                         // n_merge is used as a divisor in clip_image_batch_encode
@@ -1686,7 +1666,7 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_MIMOVL:
                     {
                         hparams.n_merge = 2; // spatial_merge_size
-                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
                         get_u32(string_format(KEY_N_HEAD_KV, "vision"), hparams.n_head_kv);
                         // 1D banded sliding-window radius (visual_token_window_size); required
@@ -1733,15 +1713,15 @@ struct clip_model_loader {
                         log_ffn_op = "gelu_erf";
                         hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
 
-                        // reka model performs better when using resize_bicubic, which stretches
-                        // the image to fit fixed square size
+                        // reka model performs better when the image is stretched to fit
+                        // fixed square size (no padding)
                         hparams.image_resize_pad = PAD_NONE;
                     } break;
                 case PROJECTOR_TYPE_GLM4V:
                     {
                         hparams.rope_theta = 10000.0f;
                         hparams.n_merge = 2; // default value for GLM4-V
-                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
                         hparams.set_limit_image_tokens(8, 4096);
                         hparams.set_warmup_n_tokens(46*46); // avoid OOM on warmup
@@ -1749,6 +1729,7 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_LLAMA4:
                     {
                         hparams.rope_theta = 10000.0f;
+                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
                         get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge, false);
                         set_llava_uhd_res_candidates(model, 3);
                     } break;
@@ -1860,7 +1841,7 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_PADDLEOCR:
                     {
                         hparams.n_merge = 2;
-                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels);
                         get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels);
 
@@ -1872,7 +1853,7 @@ struct clip_model_loader {
                         hparams.patch_size = 16;
                         hparams.image_size = 1024;
                         hparams.warmup_image_size = 1024;
-                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         hparams.image_pad_color = {127, 127, 127};
 
                         get_u32(KEY_SAM_N_BLOCK, hparams.sam_n_layer, true);
@@ -1902,7 +1883,7 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_HUNYUANVL:
                     {
                         hparams.n_merge = 2;
-                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;
+                        hparams.image_resize_algo = RESIZE_ALGO_LANCZOS;
                         hparams.image_resize_pad = PAD_NONE;
                         hparams.ffn_op = FFN_GELU;
                         hparams.set_limit_image_tokens(256, 16384);
@@ -1975,12 +1956,12 @@ struct clip_model_loader {
                 case PROJECTOR_TYPE_JANUS_PRO:
                     {
                         hparams.image_pad_color   = {127, 127, 127};
-                        hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                     } break;
                 case PROJECTOR_TYPE_GRANITE4_VISION:
                     {
                         // SigLIP tower.
-                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC;
                         hparams.image_resize_pad = PAD_CEIL;
 
                         // NOTE: feature_layers loaded in common path as optional

@@ -8,11 +8,12 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
+
 </div>
 
 A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that adds TurboQuant KV cache compression and WHT-rotated weight quantization.
 
-Synced with upstream `llama.cpp` as of `e85caa81e` (2026-08-22).
+Synced with upstream `llama.cpp` as of `ca3d5a3e1` (2026-08-27).
 
 ## TurboQuant
 
