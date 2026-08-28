@@ -1783,10 +1783,14 @@ ggml_tensor * llama_kv_cache::build_input_k_rot(ggml_context * ctx) const {
         // tiles preserve more local structure → less PPL hit on sensitive models
         // (gemma-4 26B-A4B reportedly regresses with the largest tile).
         // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
+        // note: the default must stay the largest power-of-2 that divides the head size.
+        // The DeepSeek/GLM lightning-indexer caches apply this matrix directly to full
+        // indexer key/query rows (see models/deepseek32.cpp), so a smaller tile is a
+        // shape mismatch there, not just a different rotation.
+        // Set LLAMA_ATTN_ROT_K_NROT=64 to force the smaller tile for the experiment.
         const char * LLAMA_ATTN_ROT_K_NROT = getenv("LLAMA_ATTN_ROT_K_NROT");
-        int nrot = LLAMA_ATTN_ROT_K_NROT ? atoi(LLAMA_ATTN_ROT_K_NROT) : 64;
+        int nrot = LLAMA_ATTN_ROT_K_NROT ? atoi(LLAMA_ATTN_ROT_K_NROT) : 0;
 
-        // Original master behavior (largest power-of-2): set LLAMA_ATTN_ROT_K_NROT=0
         if (nrot == 0) {
             nrot = 64;
             do {
