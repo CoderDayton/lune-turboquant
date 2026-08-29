@@ -1,0 +1,82 @@
+name: "Windows heap diagnose"
+description: >
+  Re-run test-thread-safety under full page heap inside cdb and print the
+  faulting stack. Diagnostic only - never fails the job.
+
+inputs:
+  bindir:
+    description: "Directory holding the test executable, relative to the workspace"
+    required: false
+    default: "build/bin/Release"
+  model:
+    description: "Model passed as -m, relative to the workspace"
+    required: false
+    default: "build/tinyllamas/stories15M-q4_0.gguf"
+  attempts:
+    description: "How many times to re-run before giving up on reproducing"
+    required: false
+    default: "5"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run under page heap
+      shell: pwsh
+      run: |
+        # test-thread-safety intermittently aborts with STATUS_HEAP_CORRUPTION
+        # (0xC0000374) on Windows only, after the test itself reports success.
+        # Plain ctest gives us the exit code and nothing else. Page heap puts
+        # each allocation on its own page so a bad write faults immediately
+        # instead of being noticed later, and cdb prints the faulting stack.
+        $ErrorActionPreference = 'Continue'
+
+        $test   = "test-thread-safety.exe"
+        $dbg    = "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64"
+        $cdb    = Join-Path $dbg "cdb.exe"
+        $gflags = Join-Path $dbg "gflags.exe"
+        if (-not (Test-Path $cdb)) {
+          Write-Host "cdb.exe not found under $dbg - skipping heap diagnosis"
+          exit 0
+        }
+
+        $exe   = Join-Path $env:GITHUB_WORKSPACE (Join-Path "${{ inputs.bindir }}" $test)
+        $model = Join-Path $env:GITHUB_WORKSPACE "${{ inputs.model }}"
+        if (-not (Test-Path $exe))   { Write-Host "$exe not found - skipping";   exit 0 }
+        if (-not (Test-Path $model)) { Write-Host "$model not found - skipping"; exit 0 }
+
+        $pageheap = Test-Path $gflags
+        if ($pageheap) {
+          & $gflags /p /enable $test /full | Out-Host
+        } else {
+          Write-Host "gflags.exe not found - running under cdb without page heap"
+        }
+
+        # same arguments as the ctest entry in tests/CMakeLists.txt
+        $targs = @(
+          "-m", $model,
+          "-ngl", "99",
+          "-p", "The meaning of life is",
+          "-n", "128",
+          "-c", "256",
+          "-ub", "32",
+          "-np", "4",
+          "-t", "2"
+        )
+
+        # "g" runs the target; on a crash cdb regains control and the remaining
+        # commands dump the analysis and every thread's stack.
+        $cmds = "g; !analyze -v; ~*kb; q"
+
+        for ($i = 1; $i -le ${{ inputs.attempts }}; $i++) {
+          Write-Host "=== page-heap attempt $i of ${{ inputs.attempts }} ==="
+          & $cdb -c $cmds $exe @targs 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "=== reproduced on attempt $i (exit $LASTEXITCODE) ==="
+            break
+          }
+        }
+
+        if ($pageheap) {
+          & $gflags /p /disable $test | Out-Host
+        }
+        exit 0

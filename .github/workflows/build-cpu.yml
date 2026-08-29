@@ -202,6 +202,12 @@ jobs:
           cd build
           ctest -L main -C Release --verbose --timeout 900
 
+      # diagnostic only, never changes the job outcome
+      - name: Diagnose heap corruption
+        if: ${{ failure() && steps.cmake_test.conclusion == 'failure' }}
+        continue-on-error: true
+        uses: ./.github/actions/windows-heap-diagnose
+
       # TODO: disabled for now, consider adding tests for all CPU variants instead
       # - name: Test (Intel SDE)
       #   id: cmake_test_sde

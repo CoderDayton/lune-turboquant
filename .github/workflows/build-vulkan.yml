@@ -201,6 +201,12 @@ jobs:
           cd build
           ctest -L main -C Release --verbose --timeout 900
 
+      # diagnostic only, never changes the job outcome
+      - name: Diagnose heap corruption
+        if: ${{ failure() && steps.cmake_test.conclusion == 'failure' }}
+        continue-on-error: true
+        uses: ./.github/actions/windows-heap-diagnose
+
       - name: ccache-clear
         uses: ./.github/actions/ccache-clear
         env:
