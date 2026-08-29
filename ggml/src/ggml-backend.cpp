@@ -21,35 +21,49 @@
 // MoE expert cache providers, keyed by backend registration object. Multiple
 // backends (CUDA, Metal, Vulkan, HIP) can register; each scheduler picks the
 // provider that owns a device in its backend set.
-static std::mutex g_moe_cache_registry_mu;
-static std::vector<ggml_moe_cache_api> g_moe_cache_providers;
+//
+// Both are intentionally never destroyed. ggml_backend_buffer_free() consults
+// the registry, and buffers are freed all the way through process teardown -
+// including after this translation unit's static destructors would have run.
+// On Windows the ggml DLL can be detached before the last llama-side free, so
+// a destroyed vector here means a use-after-free (heap corruption at exit).
+// Leaking a single mutex and vector removes the destruction-order dependency.
+static std::mutex & moe_cache_registry_mu() {
+    static std::mutex * mu = new std::mutex();
+    return *mu;
+}
+
+static std::vector<ggml_moe_cache_api> & moe_cache_providers() {
+    static std::vector<ggml_moe_cache_api> * providers = new std::vector<ggml_moe_cache_api>();
+    return *providers;
+}
 
 void ggml_moe_cache_register(const ggml_moe_cache_api * api) {
     if (!api || !api->owner || !api->session_create || !api->session_destroy ||
         !api->session_enter || !api->session_leave) {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_moe_cache_registry_mu);
-    for (ggml_moe_cache_api & existing : g_moe_cache_providers) {
+    std::lock_guard<std::mutex> lock(moe_cache_registry_mu());
+    for (ggml_moe_cache_api & existing : moe_cache_providers()) {
         if (existing.owner == api->owner) {
             existing = *api; // refresh: a rebuilt library re-registers
             return;
         }
     }
-    g_moe_cache_providers.push_back(*api);
+    moe_cache_providers().push_back(*api);
 }
 
 void ggml_moe_cache_unregister(const void * owner) {
-    std::lock_guard<std::mutex> lock(g_moe_cache_registry_mu);
-    g_moe_cache_providers.erase(
-        std::remove_if(g_moe_cache_providers.begin(), g_moe_cache_providers.end(),
+    std::lock_guard<std::mutex> lock(moe_cache_registry_mu());
+    moe_cache_providers().erase(
+        std::remove_if(moe_cache_providers().begin(), moe_cache_providers().end(),
             [owner](const ggml_moe_cache_api & api) { return api.owner == owner; }),
-        g_moe_cache_providers.end());
+        moe_cache_providers().end());
 }
 
 ggml_moe_cache_api ggml_moe_cache_get(const void * owner) {
-    std::lock_guard<std::mutex> lock(g_moe_cache_registry_mu);
-    for (const ggml_moe_cache_api & api : g_moe_cache_providers) {
+    std::lock_guard<std::mutex> lock(moe_cache_registry_mu());
+    for (const ggml_moe_cache_api & api : moe_cache_providers()) {
         if (api.owner == owner) {
             return api;
         }
@@ -68,8 +82,8 @@ ggml_moe_cache_api ggml_moe_cache_active(void) {
     }
     // Direct CPU users outside a scheduler scope fall back to the first
     // registered provider.
-    std::lock_guard<std::mutex> lock(g_moe_cache_registry_mu);
-    for (const ggml_moe_cache_api & api : g_moe_cache_providers) {
+    std::lock_guard<std::mutex> lock(moe_cache_registry_mu());
+    for (const ggml_moe_cache_api & api : moe_cache_providers()) {
         if (api.session_create && api.session_destroy) {
             return api;
         }
@@ -82,9 +96,9 @@ ggml_moe_cache_api ggml_moe_cache_active(void) {
 // with its session so later registration changes cannot alter the callbacks.
 static std::vector<ggml_moe_cache_api> ggml_moe_cache_provider_candidates(
         void * const * backends, int n_backends) {
-    std::lock_guard<std::mutex> lock(g_moe_cache_registry_mu);
+    std::lock_guard<std::mutex> lock(moe_cache_registry_mu());
     std::vector<ggml_moe_cache_api> result;
-    for (const ggml_moe_cache_api & api : g_moe_cache_providers) {
+    for (const ggml_moe_cache_api & api : moe_cache_providers()) {
         if (!api.session_create || !api.session_destroy ||
             !api.session_enter || !api.session_leave) {
             continue;
@@ -180,8 +194,8 @@ static void ggml_backend_moe_cache_invalidate_buffer(
     // Each registered provider invalidates its own sessions.
     std::vector<ggml_moe_cache_api> providers;
     {
-        std::lock_guard<std::mutex> lock(g_moe_cache_registry_mu);
-        providers = g_moe_cache_providers;
+        std::lock_guard<std::mutex> lock(moe_cache_registry_mu());
+        providers = moe_cache_providers();
     }
     for (const ggml_moe_cache_api & api : providers) {
         if (api.invalidate) {
