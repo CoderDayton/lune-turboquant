@@ -15,7 +15,7 @@
 
 A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that adds TurboQuant KV cache compression and WHT-rotated weight quantization.
 
-Synced with upstream `llama.cpp` as of `d7bd3bfca` (2026-08-28).
+Synced with upstream `llama.cpp` as of `2092353c8` (2026-09-07).
 
 ## TurboQuant
 
@@ -76,6 +76,8 @@ The `llama.cpp` project is built on top of the [ggml](https://github.com/ggml-or
 | [CANN](docs/build.md#cann) | Ascend NPU |
 | [CUDA](docs/build.md#cuda) | Nvidia GPU |
 | [HIP](docs/build.md#hip) | AMD GPU |
+| [Hexagon](docs/backend/snapdragon/README.md) | Snapdragon |
+| [IBM zDNN](docs/backend/zDNN.md) | IBM Z & LinuxONE |
 | [MUSA](docs/build.md#musa) | Moore Threads GPU |
 | [Metal](docs/build.md#metal-build) | Apple Silicon |
 | [OpenCL](docs/backend/OPENCL.md) | Adreno GPU |

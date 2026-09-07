@@ -467,6 +467,7 @@ typedef struct {
     float    m1;
     int32_t  n_head_log2;
     float    logit_softcap;
+    int32_t  n_kv_max_padded;
 } ggml_metal_kargs_flash_attn_ext_vec;
 
 // TurboFlash two-pass: asymmetric K=q8_0, V=turbo3 fused attention
@@ -502,6 +503,18 @@ typedef struct {
     int32_t  ne01;      // number of query heads (total n_bh)
     int32_t  n_blocks;  // number of blocks from pass 1
 } ggml_metal_kargs_turbo_flash_p2;
+
+typedef struct {
+    int32_t  ne30;
+    int32_t  ne31;
+    int32_t  ne32;
+    int32_t  ne33;
+    uint64_t nb31;
+    uint64_t nb32;
+    uint64_t nb33;
+    int32_t  n_kv_max;
+    int32_t  n_kv_max_padded;
+} ggml_metal_kargs_flash_attn_ext_vec_idx;
 
 typedef struct {
     int32_t  nrows;
@@ -1236,6 +1249,17 @@ typedef struct {
     int32_t  top_k;
     int32_t  len;
 } ggml_metal_kargs_argsort_merge;
+
+typedef struct {
+    int32_t  ne00;   // number of columns (elements per row)
+    int32_t  ne01;   // rows
+    int32_t  ne02;
+    int32_t  ne03;
+    uint64_t nb01;   // row stride in src0
+    uint64_t nb02;
+    uint64_t nb03;
+    int32_t  top_k;  // k
+} ggml_metal_kargs_top_k;
 
 typedef struct {
     int32_t nrows;
