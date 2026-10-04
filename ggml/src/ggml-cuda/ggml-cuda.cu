@@ -823,8 +823,11 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
-    // TQ4_1S → q8_0 load-time conversion (opt-in: GGML_TQ_CONVERT_Q8=1)
-    if (ggml_tq_convert_q8() && tensor->type == GGML_TYPE_TQ4_1S && offset == 0 && size == ggml_nbytes(tensor)) {
+    // TQ4_1S -> q8_0 load-time conversion (opt-out: GGML_TQ_NATIVE=1).
+    // Weight buffers only: the conversion rewrites the tensor type and strides,
+    // which would invalidate any view already created on the tensor.
+    if (ggml_tq_convert_q8() && buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
+        tensor->type == GGML_TYPE_TQ4_1S && offset == 0 && size == ggml_nbytes(tensor)) {
         const int64_t n_elements = ggml_nelements(tensor);
 
         // Upload TQ4_1S to a temp GPU buffer
