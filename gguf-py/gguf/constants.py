@@ -493,7 +493,6 @@ class Keys:
             DOWNSAMPLE_RATE = "clip.audio.projector.downsample_rate"
             HEAD_COUNT      = "clip.audio.projector.head_count"
 
-
     class ClipGenAudio:
         PROJECTOR_TYPE      = "clip.gen.audio.projector_type" # for mixed modality models
         # name of the weight variant, for settings that are not in the checkpoint
@@ -507,7 +506,6 @@ class Keys:
             HEAD_COUNT      = "clip.gen.audio.attention.head_count"
             HEAD_COUNT_KV   = "clip.gen.audio.attention.head_count_kv"
             LAYERNORM_EPS   = "clip.gen.audio.attention.layer_norm_epsilon"
-
 
     class Diffusion:
         SHIFT_LOGITS        = "diffusion.shift_logits"
@@ -707,7 +705,6 @@ class MODEL_ARCH(IntEnum):
     POCKETTTS        = auto()
     K2HORIZON        = auto()
     KOLIBRI1         = auto()
-
 
 
 class VISION_PROJECTOR_TYPE(IntEnum):
@@ -6307,7 +6304,6 @@ class LlamaFileType(IntEnum):
     MOSTLY_Q2_0          = 41  # except 1d tensors
     MOSTLY_TQ3_1S        = 43  # except 1d tensors
     MOSTLY_TQ4_1S        = 44  # except 1d tensors
-
 
     GUESSED              = 1024  # not specified in the model file
 

@@ -3085,7 +3085,7 @@ int ggml_metal_op_mul_mat_id(ggml_metal_op_t ctx, int idx) {
             // TQ weight MoE: pre-rotate activations, run the rotated-domain kernel, then restore src1
             const bool tq_rotated = is_tq_weight && ne00 % 32 == 0;
 
-            const int64_t n_act_val = (int64_t)ne10 * ne11 * ne12 * ne13;
+            int64_t n_act_val = (int64_t)ne10 * ne11 * ne12 * ne13; // non-const: set_bytes takes void *
 
             if (tq_rotated) {
                 auto pipeline_rot = ggml_metal_library_get_pipeline_tq3_rotate_act(lib, false);

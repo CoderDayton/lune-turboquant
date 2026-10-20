@@ -1415,8 +1415,9 @@ void launch_fattn(
         hip_f16_alloc & operator=(const hip_f16_alloc &) = delete;
         ~hip_f16_alloc() {
             if (ptr) {
-                cudaStreamSynchronize(stream);
-                cudaFree(ptr);
+                // destructor: nothing useful to do on failure, and hipError_t is [[nodiscard]]
+                (void) cudaStreamSynchronize(stream);
+                (void) cudaFree(ptr);
             }
         }
         void alloc(size_t nelements) {
