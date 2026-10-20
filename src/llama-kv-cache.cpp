@@ -545,8 +545,8 @@ llama_kv_cache::llama_kv_cache(
         n_embd_head_k_all = other->n_embd_head_k_all;
         n_embd_head_v_all = other->n_embd_head_v_all;
 
-        attn_rot_k = other->attn_rot_k;
-        attn_rot_v = other->attn_rot_v;
+        n_rot_k = other->n_rot_k;
+        n_rot_v = other->n_rot_v;
     } else {
         // TurboQuant: master's #21038 attention rotation is OFF by default on this
         // fork. Enable per-side via LLAMA_ATTN_ROT_K_OVERRIDE=1 and/or
@@ -572,15 +572,21 @@ llama_kv_cache::llama_kv_cache(
         //
         // Reported by @erazortt (TheTom/turboquant_plus#88).
         //
-        // LLAMA_ATTN_ROT_DISABLE retained as a hard lock-out: =1 forces rotation
-        // off on both sides and blocks the per-side overrides below.
-        const char * LLAMA_ATTN_ROT_DISABLE = getenv("LLAMA_ATTN_ROT_DISABLE");
-        const bool attn_rot_disable = LLAMA_ATTN_ROT_DISABLE ? (atoi(LLAMA_ATTN_ROT_DISABLE) != 0) : false;
+        // Two knobs are a hard lock-out that forces rotation off on both sides and blocks
+        // the per-side overrides below: LLAMA_ATTN_ROT_DISABLE=1, for the whole process,
+        // and the model setting, for the contexts of one model - see llama_model_set_attn_rot.
+        const char * env_rot_disable = getenv("LLAMA_ATTN_ROT_DISABLE");
+
+        const bool attn_rot_disable = !model.attn_rot || (env_rot_disable != nullptr && atoi(env_rot_disable) != 0);
+        if (attn_rot_disable) {
+            LLAMA_LOG_WARN("%s: attention rotation force disabled (%s)\n", __func__,
+                    model.attn_rot ? "LLAMA_ATTN_ROT_DISABLE" : "llama_model_set_attn_rot");
+        }
 
         // Default: rotation OFF on both sides (safe across all tested model families).
         // Override per side via env vars below.
-        attn_rot_k = false;
-        attn_rot_v = false;
+        bool attn_rot_k = false;
+        bool attn_rot_v = false;
 
         // Per-side overrides. Set LLAMA_ATTN_ROT_K_OVERRIDE=1 / LLAMA_ATTN_ROT_V_OVERRIDE=1
         // to enable rotation. The cache type and head-dim alignment guards below
@@ -603,21 +609,57 @@ llama_kv_cache::llama_kv_cache(
 
         // always create Hadamard rotation tensors for the DSA lightning indexers:
         // this is a functional requirement for the model, not optional tuning, so
-        // it overrides the default-off policy (still respects the hard
-        // LLAMA_ATTN_ROT_DISABLE lock-out).
-        if (!attn_rot_disable && (model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4 ||
+        // it overrides both the default-off policy and the lock-out above (the
+        // indexer graph reads the matrix unconditionally).
+        if ((model.arch == LLM_ARCH_DEEPSEEK32 || model.arch == LLM_ARCH_DEEPSEEK4 ||
                 model.arch == LLM_ARCH_GLM_DSA || model.arch == LLM_ARCH_DOTS3NOTE) &&
                 hparams.n_embd_head_k_full == hparams.indexer_head_size) {
             attn_rot_k = true;
         }
+
+        if (attn_rot_k) {
+            // default: the largest power-of-2 tile that divides the head size. It must stay the
+            // default because the DeepSeek/GLM lightning-indexer caches apply this matrix directly
+            // to full indexer key/query rows (see models/deepseek32.cpp), so a smaller tile is a
+            // shape mismatch there, not just a different rotation.
+            // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
+            n_rot_k = 64;
+            while (n_embd_head_k_all % (2*n_rot_k) == 0) {
+                n_rot_k *= 2;
+            }
+
+            // EXPERIMENT (master TODO): LLAMA_ATTN_ROT_K_NROT=64 forces a smaller tile for K,
+            // mirroring V's choice. The upstream comment hypothesizes smaller tiles preserve more
+            // local structure -> less PPL hit on sensitive models (gemma-4 26B-A4B reportedly
+            // regresses with the largest tile).
+            const char * LLAMA_ATTN_ROT_K_NROT = getenv("LLAMA_ATTN_ROT_K_NROT");
+            const int nrot = LLAMA_ATTN_ROT_K_NROT ? atoi(LLAMA_ATTN_ROT_K_NROT) : 0;
+            if (nrot > 0) {
+                // only the power-of-2 sizes from 64 up are precomputed below
+                if (nrot >= 64 && (nrot & (nrot - 1)) == 0 && n_embd_head_k_all % nrot == 0) {
+                    n_rot_k = nrot;
+                } else {
+                    LLAMA_LOG_WARN("%s: ignoring LLAMA_ATTN_ROT_K_NROT=%d (must be a power of 2 >= 64 dividing %d)\n",
+                            __func__, nrot, n_embd_head_k_all);
+                }
+            }
+        }
+        if (attn_rot_v) {
+            n_rot_v = 64;
+            // using smaller rotation matrices for V seems beneficial
+            // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4146397570
+            //while (hparams.n_embd_head_v() % (2*n_rot_v) == 0) {
+            //    n_rot_v *= 2;
+            //}
+        }
     }
 
-    LLAMA_LOG_INFO("%s: attn_rot_k = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_k, n_embd_head_k_all);
-    LLAMA_LOG_INFO("%s: attn_rot_v = %d, n_embd_head_k_all = %d\n", __func__, attn_rot_v, n_embd_head_v_all);
+    LLAMA_LOG_INFO("%s: n_rot_k = %u, n_embd_head_k_all = %d\n", __func__, n_rot_k, n_embd_head_k_all);
+    LLAMA_LOG_INFO("%s: n_rot_v = %u, n_embd_head_k_all = %d\n", __func__, n_rot_v, n_embd_head_v_all);
 
     // pre-compute the haramard matrices and keep them in host memory
     // TODO: in the future, we can make copies in the backend buffers to avoid host -> device transfers
-    if (attn_rot_k || attn_rot_v) {
+    if (n_rot_k || n_rot_v) {
         for (int64_t n = 64; n <= std::max(n_embd_head_k_all, n_embd_head_v_all); n *= 2) {
             attn_rot_hadamard[n] = std::vector<float>(n*n);
 
@@ -991,14 +1033,12 @@ llama_memory_context_ptr llama_kv_cache::init_batch(
             llama_batch_allocr & balloc,
             uint32_t n_ubatch,
             bool embd_all) {
-    GGML_UNUSED(embd_all);
-
     do {
         balloc.split_reset();
 
         std::vector<llama_ubatch> ubatches;
         while (true) {
-            auto ubatch = n_stream == 1 ? balloc.split_simple(n_ubatch) : balloc.split_equal(n_ubatch, true, 0);
+            auto ubatch = n_stream == 1 ? balloc.split_simple(n_ubatch) : embd_all ? balloc.split_seq(n_ubatch) : balloc.split_equal(n_ubatch, true, 0);
 
             if (ubatch.n_tokens == 0) {
                 break;
@@ -1426,7 +1466,9 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
                     ext.y = ubatch.pos[i + ubatch.n_tokens];
                 }
 
-                if (ubatch.token) {
+                const bool is_embd = !ubatch.token || (ubatch.is_mixed() && ubatch.type[i]);
+
+                if (!is_embd) {
                     ext.tok = ubatch.token[i];
                 } else if (hparams.ple_n_heads > 0) {
                     // embd batch (multimodal input) has no token ids, need to pad it with the correct ID for PLE layers
@@ -1787,30 +1829,8 @@ ggml_tensor * llama_kv_cache::build_input_v_idxs(ggml_context * ctx, const llama
 ggml_tensor * llama_kv_cache::build_input_k_rot(ggml_context * ctx) const {
     ggml_tensor * res = nullptr;
 
-    if (attn_rot_k) {
-        // EXPERIMENT (master TODO): force smallest rotation matrix (nrot=64)
-        // for K, mirroring V's choice. Master defaults to the largest power-of-2
-        // that divides head_dim, but the upstream comment hypothesizes smaller
-        // tiles preserve more local structure → less PPL hit on sensitive models
-        // (gemma-4 26B-A4B reportedly regresses with the largest tile).
-        // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4141323088
-        // note: the default must stay the largest power-of-2 that divides the head size.
-        // The DeepSeek/GLM lightning-indexer caches apply this matrix directly to full
-        // indexer key/query rows (see models/deepseek32.cpp), so a smaller tile is a
-        // shape mismatch there, not just a different rotation.
-        // Set LLAMA_ATTN_ROT_K_NROT=64 to force the smaller tile for the experiment.
-        const char * LLAMA_ATTN_ROT_K_NROT = getenv("LLAMA_ATTN_ROT_K_NROT");
-        int nrot = LLAMA_ATTN_ROT_K_NROT ? atoi(LLAMA_ATTN_ROT_K_NROT) : 0;
-
-        if (nrot == 0) {
-            nrot = 64;
-            do {
-                nrot *= 2;
-            } while (n_embd_head_k_all % nrot == 0);
-            nrot /= 2;
-        }
-
-        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, nrot);
+    if (n_rot_k) {
+        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_rot_k, n_rot_k);
         ggml_set_input(res);
         ggml_set_name(res, "attn_inp_k_rot");
     }
@@ -1821,16 +1841,8 @@ ggml_tensor * llama_kv_cache::build_input_k_rot(ggml_context * ctx) const {
 ggml_tensor * llama_kv_cache::build_input_v_rot(ggml_context * ctx) const {
     ggml_tensor * res = nullptr;
 
-    if (attn_rot_v) {
-        int nrot = 64;
-        // using smaller rotation matrices for V seems beneficial
-        // ref: https://github.com/ggml-org/llama.cpp/pull/21038#issuecomment-4146397570
-        //do {
-        //    nrot *= 2;
-        //} while (hparams.n_embd_head_v() % nrot == 0);
-        //nrot /= 2;
-
-        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, nrot, nrot);
+    if (n_rot_v) {
+        res = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_rot_v, n_rot_v);
         ggml_set_input(res);
         ggml_set_name(res, "attn_inp_v_rot");
     }
@@ -2177,7 +2189,7 @@ void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch 
 
 void llama_kv_cache::set_input_k_rot(ggml_tensor * dst) const {
     if (!dst) {
-        // rotation disabled for this cache (attn_rot_k == false): the graph
+        // rotation disabled for this cache (n_rot_k == 0): the graph
         // never created the input tensor — nothing to fill.
         return;
     }
@@ -2220,10 +2232,13 @@ void llama_kv_cache::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, st
 
     // an embd (multimodal) ubatch can repeat one position for a whole image, so positions
     // do not encode the token order; resolve its predecessors by ubatch order instead
+    // same for a mixed ubatch
+    const bool by_order = !ubatch.token || ubatch.is_mixed();
+
     std::vector<uint32_t> ord; // index among the ubatch tokens of the same seq
     std::unordered_map<llama_seq_id, std::vector<uint32_t>> seq_idx;
 
-    if (!ubatch.token) {
+    if (by_order) {
         ord.resize(n_tokens);
         for (uint32_t i = 0; i < n_tokens; ++i) {
             auto & v = seq_idx[ubatch.seq_id[i][0]];
@@ -2241,7 +2256,7 @@ void llama_kv_cache::get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, st
             const llama_pos d = (llama_pos) (n - j);
 
             llama_pos p;
-            if (!ubatch.token) {
+            if (by_order) {
                 const auto & v = seq_idx[seq_id];
                 const int64_t k = (int64_t) ord[i] - d;
                 // k >= 0: an earlier token of this very ubatch; k < 0: before the chunk
@@ -2359,7 +2374,7 @@ public:
 void llm_graph_input_k_shift::set_input(const llama_ubatch * ubatch) {
     GGML_UNUSED(ubatch);
 
-    if (k_shift) {
+    if (k_shift && k_shift->buffer) {
         kv_self->set_input_k_shift(k_shift);
     }
 
@@ -2426,7 +2441,9 @@ void llama_kv_cache::state_write(llama_io_write_i & io, llama_seq_id seq_id, lla
         return;
     }
 
-    GGML_UNUSED(flags);
+    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) && swa_type == LLAMA_SWA_TYPE_NONE) {
+        return;
+    }
 
     io.write(&n_stream, sizeof(n_stream));
 
@@ -2505,7 +2522,9 @@ const slot_info_vec_t *   sinfos_in) {
         return;
     }
 
-    GGML_UNUSED(flags);
+    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) && swa_type == LLAMA_SWA_TYPE_NONE) {
+        return;
+    }
 
     // TODO: fix incosistent handling of `seq_id < 0` and `seq_id == -1` in the codebase [TAG_LLAMA_SEQ_ID_NEG]
     GGML_ASSERT(seq_id == -1 || (seq_id >= 0 && (size_t) seq_id < seq_to_stream.size()));
@@ -2607,6 +2626,8 @@ void llama_kv_cache::state_write_data(llama_io_write_i & io, const cell_ranges_t
 
     io.write(&v_trans, sizeof(v_trans));
     io.write(&n_layer, sizeof(n_layer));
+    io.write(&n_rot_k, sizeof(n_rot_k));
+    io.write(&n_rot_v, sizeof(n_rot_v));
 
     // Iterate and write all the keys first, each row is a cell
     // Get whole range at a time
@@ -2897,9 +2918,13 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
 
     uint32_t v_trans;
     uint32_t n_layer;
+    uint32_t n_rot_k_ref;
+    uint32_t n_rot_v_ref;
 
     io.read(&v_trans, sizeof(v_trans));
     io.read(&n_layer, sizeof(n_layer));
+    io.read(&n_rot_k_ref, sizeof(n_rot_k_ref));
+    io.read(&n_rot_v_ref, sizeof(n_rot_v_ref));
 
     if (n_layer != layers.size()) {
         LLAMA_LOG_ERROR("%s: mismatched layer count (%u instead of %u)\n", __func__, n_layer, (uint32_t) layers.size());
@@ -2913,6 +2938,16 @@ bool llama_kv_cache::state_read_data(llama_io_read_i & io, uint32_t strm, uint32
 
     if (this->v_trans != (bool) v_trans) {
         LLAMA_LOG_ERROR("%s: incompatible V transposition\n", __func__);
+        return false;
+    }
+
+    if (n_rot_k_ref != n_rot_k) {
+        LLAMA_LOG_ERROR("%s: incompatible key rotation (%u instead of %u)\n", __func__, n_rot_k_ref, n_rot_k);
+        return false;
+    }
+
+    if (n_rot_v_ref != n_rot_v) {
+        LLAMA_LOG_ERROR("%s: incompatible value rotation (%u instead of %u)\n", __func__, n_rot_v_ref, n_rot_v);
         return false;
     }
 

@@ -25,6 +25,10 @@ on:
       'ggml/src/ggml-metal/**'
     ]
 
+cache-mode: none
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
   cancel-in-progress: true
@@ -71,8 +75,9 @@ jobs:
         id: cmake_test
         run: |
           cd build
+          # Metal Paravirtual devices are difficult to support -> disable
           # ref: https://github.com/ggml-org/llama.cpp/pull/19802#issuecomment-4013704023
-          ctest -L main -E "test-llama-archs|test-save-load-state" --verbose --timeout 900
+          ctest -L main -E "test-llama-archs|test-llama-context" --verbose --timeout 900
 
   macos-latest-x64:
     runs-on: macos-15-intel
@@ -147,6 +152,10 @@ jobs:
 
   macos-latest-ios-xcode:
     runs-on: macos-latest
+
+    permissions:
+      actions: write
+      contents: read
 
     steps:
       - name: Checkout code
@@ -260,6 +269,10 @@ jobs:
   macos-latest-swift:
     runs-on: macos-latest
     needs: macos-latest-ios-xcode
+
+    permissions:
+      actions: read
+      contents: read
 
     strategy:
       matrix:
