@@ -122,6 +122,7 @@ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_wi
     X(FA_TURBO3,       fa_turbo3)      \
     X(FA_TURBO4,       fa_turbo4)      \
     X(FA_TURBO_FLASH,  fa_turbo_flash) \
+    X(FA_TENSOR,       fa_tensor)      \
     X(FA_VEC_F16,      fa_vec_f16)     \
     X(FA_VEC_F32,      fa_vec_f32)     \
     X(FA_VEC_Q4_0,     fa_vec_q4_0)    \
@@ -133,6 +134,7 @@ int ggml_metal_pipeline_max_theads_per_threadgroup(struct ggml_metal_pipeline_wi
     X(FA_VEC_TURBO3,   fa_vec_turbo3)  \
     X(FA_VEC_TURBO4,   fa_vec_turbo4)  \
     X(MUL_MV,          mul_mv)         \
+    X(MUL_MV_MMA,      mul_mv_mma)     \
     X(MUL_MM,          mul_mm)         \
     X(QUANTIZE,        quantize)       \
     X(SOFTMAX,         softmax)        \
@@ -1320,8 +1322,6 @@ ggml_metal_device_t ggml_metal_device_init(int device, int n_devices) {
                     dev->props.use_shared_buffers = true;
                 }
 
-                dev->props.supports_gpu_family_apple7 = [dev->mtl_device supportsFamily:MTLGPUFamilyApple7];
-
                 dev->props.device_id = ggml_metal_device_id_parse([[dev->mtl_device name] UTF8String]);
 
                 dev->props.op_offload_min_batch_size  = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
@@ -1801,11 +1801,26 @@ bool ggml_metal_device_supports_op(ggml_metal_device_t dev, const struct ggml_te
                 op->src[0]->ne[0] != 576) {
                 return false;
             }
-            if (op->src[1]->ne[0] == 72 && op->src[1]->ne[0] != op->src[2]->ne[0]) {
+            // the kernels exist for K == V and for these K > V pairs only
+            if (op->src[1]->ne[0] != op->src[2]->ne[0] &&
+                !(op->src[1]->ne[0] ==  96 && op->src[2]->ne[0] ==  64) &&
+                !(op->src[1]->ne[0] == 128 && op->src[2]->ne[0] ==  96) &&
+                !(op->src[1]->ne[0] == 192 && op->src[2]->ne[0] == 128) &&
+                !(op->src[1]->ne[0] == 320 && op->src[2]->ne[0] == 256) &&
+                !(op->src[1]->ne[0] == 576 && op->src[2]->ne[0] == 512)) {
                 return false;
             }
-            if (op->src[1]->ne[0] < op->src[2]->ne[0]) {
-                return false;
+            // the turbo FA kernels (incl. mixed q8_0 x turbo) have no 96/64 or 128/96 instantiations
+            {
+                const bool any_turbo =
+                    op->src[1]->type == GGML_TYPE_TURBO2_0 || op->src[1]->type == GGML_TYPE_TURBO3_0 ||
+                    op->src[1]->type == GGML_TYPE_TURBO4_0 || op->src[2]->type == GGML_TYPE_TURBO2_0 ||
+                    op->src[2]->type == GGML_TYPE_TURBO3_0 || op->src[2]->type == GGML_TYPE_TURBO4_0;
+                if (any_turbo &&
+                    ((op->src[1]->ne[0] ==  96 && op->src[2]->ne[0] == 64) ||
+                     (op->src[1]->ne[0] == 128 && op->src[2]->ne[0] == 96))) {
+                    return false;
+                }
             }
             if (op->src[1]->type != op->src[2]->type) {
                 // Allow asymmetric K/V for supported mixed pairs:

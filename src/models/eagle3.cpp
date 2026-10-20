@@ -236,6 +236,4 @@ llm_build_eagle3_decode::llm_build_eagle3_decode(const llama_model & model, cons
 
     cb(cur, "result_output", -1);
     res->t_logits = cur;
-
-    ggml_build_forward_expand(gf, cur);
 }
