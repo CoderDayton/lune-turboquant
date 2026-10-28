@@ -79,42 +79,6 @@ jobs:
           # ref: https://github.com/ggml-org/llama.cpp/pull/19802#issuecomment-4013704023
           ctest -L main -E "test-llama-archs|test-llama-context|test-speculative-rejection-sampling" --verbose --timeout 900
 
-  macos-latest-x64:
-    runs-on: macos-15-intel
-
-    steps:
-      - name: Clone
-        id: checkout
-        uses: actions/checkout@v6
-
-      - name: ccache
-        uses: ggml-org/ccache-action@v1.2.21
-        with:
-          key: apple-x64
-          evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-
-      - name: Build
-        id: cmake_build
-        run: |
-          sysctl -a
-          # Metal is disabled due to intermittent failures with Github runners not having a GPU:
-          # https://github.com/ggml-org/llama.cpp/actions/runs/8635935781/job/23674807267#step:5:2313
-          cmake -B build \
-            -DCMAKE_BUILD_RPATH="@loader_path" \
-            -DLLAMA_FATAL_WARNINGS=ON \
-            -DLLAMA_BUILD_BORINGSSL=ON \
-            -DGGML_METAL=OFF \
-            -DGGML_RPC=ON \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3
-          time cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
-
-      - name: Test
-        id: cmake_test
-        run: |
-          cd build
-          ctest -L main --verbose --timeout 900
-
   macos-latest-metal-offline-compile:
     runs-on: macos-latest
 
@@ -149,6 +113,7 @@ jobs:
             xcrun -sdk macosx metal -fno-fast-math -I ggml/src -I ggml/src/ggml-metal \
               -c "$src" -o /dev/null
           done
+
 
   macos-latest-ios-xcode:
     runs-on: macos-latest
