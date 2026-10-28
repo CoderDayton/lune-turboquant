@@ -1412,32 +1412,82 @@ f16vec4 dequantFuncNVFP4_v(const in decodeBufNVFP4 bl, const in uint blockCoords
 }
 #endif
 
-#if defined(DATA_A_TURBO3_0)
+// TurboQuant blocks: values stay in the WHT-rotated domain, the graph handles rotation.
+// Turbo FA K/V in flash_attn_cm2.comp uses these, so they are not guarded by DATA_A_*.
+const float turbo2_centroids[4] = float[4](-0.133462, -0.039994, 0.039994, 0.133462);
+const float turbo3_centroids[8] = float[8](
+    -0.190685, -0.117832, -0.065717, -0.021460,
+     0.021460,  0.065717,  0.117832,  0.190685);
+const float turbo4_centroids[16] = float[16](
+    -0.241529, -0.182877, -0.143016, -0.111036,
+    -0.083292, -0.058050, -0.034299, -0.011349,
+     0.011349,  0.034299,  0.058050,  0.083292,
+     0.111036,  0.143016,  0.182877,  0.241529);
+
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTURBO2_0 {
+   block_turbo2_0 block;
+};
+
+float16_t dequantFuncTURBO2_0(const in decodeBufTURBO2_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint j = coordInBlock[1];
+    const uint idx = (uint(bl.block.qs[j / 4]) >> ((j % 4) * 2)) & 0x3;
+    return float16_t(turbo2_centroids[idx] * float(bl.block.norm));
+}
+
+f16vec4 dequantFuncTURBO2_0_v(const in decodeBufTURBO2_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint q = uint(bl.block.qs[coordInBlock[1] / 4]);
+    const vec4 c = vec4(turbo2_centroids[q & 0x3], turbo2_centroids[(q >> 2) & 0x3],
+                        turbo2_centroids[(q >> 4) & 0x3], turbo2_centroids[(q >> 6) & 0x3]);
+    return f16vec4(c * float(bl.block.norm));
+}
+
 layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTURBO3_0 {
    block_turbo3_0 block;
 };
 
 float16_t dequantFuncTURBO3_0(const in decodeBufTURBO3_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
 {
-    const float centroids[8] = float[8](
-        -0.190685, -0.117832, -0.065717, -0.021460,
-         0.021460,  0.065717,  0.117832,  0.190685
-    );
-    const float norm = float(bl.block.norm);
     const uint j = coordInBlock[1];
-
-    // Extract 2-bit low index from qs (4 per byte)
+    // low 2 bits from qs (4 per byte), high bit from signs (8 per byte)
     const uint low2 = (uint(bl.block.qs[j / 4]) >> ((j % 4) * 2)) & 0x3;
-
-    // Extract 1-bit high from signs (8 per byte)
     const uint hi1 = (uint(bl.block.signs[j / 8]) >> (j % 8)) & 0x1;
-
-    // Combine to 3-bit index
-    const uint idx = low2 | (hi1 << 2);
-
-    return float16_t(centroids[idx] * norm);
+    return float16_t(turbo3_centroids[low2 | (hi1 << 2)] * float(bl.block.norm));
 }
-#endif
+
+f16vec4 dequantFuncTURBO3_0_v(const in decodeBufTURBO3_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint j = coordInBlock[1];
+    const uint q = uint(bl.block.qs[j / 4]);
+    const uint s = uint(bl.block.signs[j / 8]) >> (j & 0x7);
+    const vec4 c = vec4(turbo3_centroids[( q       & 0x3) | ((s << 2) & 0x4)],
+                        turbo3_centroids[((q >> 2) & 0x3) | ((s << 1) & 0x4)],
+                        turbo3_centroids[((q >> 4) & 0x3) | ( s       & 0x4)],
+                        turbo3_centroids[((q >> 6) & 0x3) | ((s >> 1) & 0x4)]);
+    return f16vec4(c * float(bl.block.norm));
+}
+
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer decodeBufTURBO4_0 {
+   block_turbo4_0 block;
+};
+
+float16_t dequantFuncTURBO4_0(const in decodeBufTURBO4_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint j = coordInBlock[1];
+    const uint idx = (uint(bl.block.qs[j / 2]) >> ((j % 2) * 4)) & 0xF;
+    return float16_t(turbo4_centroids[idx] * float(bl.block.norm));
+}
+
+f16vec4 dequantFuncTURBO4_0_v(const in decodeBufTURBO4_0 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint j = coordInBlock[1];
+    const uint b0 = uint(bl.block.qs[j / 2]);
+    const uint b1 = uint(bl.block.qs[j / 2 + 1]);
+    const vec4 c = vec4(turbo4_centroids[b0 & 0xF], turbo4_centroids[b0 >> 4],
+                        turbo4_centroids[b1 & 0xF], turbo4_centroids[b1 >> 4]);
+    return f16vec4(c * float(bl.block.norm));
+}
 
 #if defined(DATA_A_Q1_0)
 #define dequantFuncA dequantFuncQ1_0
