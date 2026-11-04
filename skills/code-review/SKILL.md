@@ -84,6 +84,7 @@ See the `add-new-model` skill and `docs/development/HOWTO-add-model.md` for the 
 - New tensor names go through `tensor_mapping.py`, not ad-hoc name matching.
 - For QKV, split the *activation* with `ggml_view`, not the *weight* tensor; rely on ggml broadcasting instead of manually duplicating tensors.
 - New graph inputs are declared at the top of the graph-build function, not inline where first used.
+- Don't end a text model graph with `ggml_build_forward_expand(gf, cur)` on `t_logits`/`t_embd` - it's redundant, since `llama_model::build_graph()` expands them via `build_logits()` and `build_pooling()` (and skips the LM head for pooled embeddings).
 - Hparams that the model can't run correctly without must be mandatory (hard-error if missing), not read with a silent default fallback. Only genuinely-optional-across-configs values get a fallback accessor.
 - New/optional weight tensors (scales, etc.) must route through `build_lora_mm` and the existing helpers, matching convention - don't leave raw matmuls copied from another arch.
 - Don't hack RoPE with a custom sin/cos implementation. If `ggml_rope_ext` genuinely can't express it, that's an issue for discussion, not a PR.
@@ -240,7 +241,7 @@ Enforce the `AGENTS.md` / `CONTRIBUTING.md` coding and naming guidelines on ever
 
 Run this in addition to the General checklist whenever the diff touches turbo code, and instead of the upstream-facing gates where they conflict. The AGENTS.md "Known pitfalls" list is the regression checklist - each entry there cost a real bug; verify the diff doesn't disturb those invariants.
 
-- **Type/enum stability:** `GGML_TYPE_TURBO2_0=43, TURBO3_0=44, TQ3_1S=45, TQ4_1S=46, TURBO4_0=47` and `GGML_OP_TURBO_WHT` are baked into GGUF files and cross-backend dispatch - never renumber, reorder, or repurpose. New fork types go after 47.
+- **Type/enum stability:** `GGML_TYPE_TQ3_1S=45, TQ4_1S=46` are baked into GGUF files - never renumber, reorder, or repurpose. The runtime-only KV types `TURBO2_0=44, TURBO4_0=47, TURBO3_0=48` move only when an upstream type claims their slot (43 went to upstream `F8_E4M3`); update `ggml_type_ids.glsl` and the HIP VGPR whitelist with them. New fork types go after 48.
 - **Codec fidelity:** `ggml/src/ggml-turbo-quant.c` must stay byte-identical to fork tip conventions; any change needs `test-turbo-quant` passing (turbo3 MSE=0/Cosine=1.0, turbo4 Cosine=0.9956) plus `test-quantize-fns` (TQ3_1S/TQ4_1S cases).
 - **Backend coverage matrix:** a change to turbo KV or TQ weight behavior must keep every backend in sync - CPU, CUDA/HIP, Metal, Vulkan, SYCL. The classic rebase regressions, in order: Metal `[[host_name]]` kernel instantiations dropped (NULL-pipeline deref), Vulkan SET_ROWS pipeline registration missing TURBO types or the `require_full_subgroups=true, subgroup_size=32` flags (abort), CUDA TQ exclusion from the mmvq path dropped (abort with `GGML_TQ_NATIVE=1`).
 - **CUDA TQ kernels:** no `__byte_perm` in centroid LUTs (`mmvq-tq.cu`) - plain shifts only; the permute chain silently produces garbage on some toolchains. MoE TQ `MUL_MAT_ID` must keep disabling CUDA graphs (stream sync requirement).

@@ -8,12 +8,12 @@ This repo is a fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) (upstr
 
 TurboQuant compresses the KV cache far beyond the standard `q8_0` by applying a fixed 128x128 orthonormal Walsh-Hadamard rotation (`GGML_OP_TURBO_WHT`) to cache vectors before quantization, which Gaussianizes the distribution, and inverse-rotating after dequantization. Head dims that are not multiples of 128 are zero-padded. MLA models (DeepSeek) have no separate V cache, so V rotation/padding is skipped for them, and K/V cache types must be identical.
 
-The five fork-only GGML types (registered in `ggml/include/ggml.h`):
+The five fork-only GGML types (registered in `ggml/include/ggml.h`; 43 is upstream's `F8_E4M3`):
 
 | Type   | Enum                       | Purpose                             | Size         |
 |--------|----------------------------|-------------------------------------|--------------|
-| turbo2 | `GGML_TYPE_TURBO2_0` (43)  | KV cache only                       | 2 bits/value |
-| turbo3 | `GGML_TYPE_TURBO3_0` (44)  | KV cache only                       | 3.25 bits    |
+| turbo2 | `GGML_TYPE_TURBO2_0` (44)  | KV cache only                       | 2 bits/value |
+| turbo3 | `GGML_TYPE_TURBO3_0` (48)  | KV cache only                       | 3.25 bits    |
 | turbo4 | `GGML_TYPE_TURBO4_0` (47)  | KV cache only                       | 4.25 bits    |
 | TQ3_1S | `GGML_TYPE_TQ3_1S` (45)    | model weights, WHT-rotated Lloyd-Max| 3 bits, block 32 |
 | TQ4_1S | `GGML_TYPE_TQ4_1S` (46)    | model weights                       | 4 bits, block 32 |
@@ -23,7 +23,7 @@ Turbo cache types are runtime-only, never stored in GGUF. TQ3_1S/TQ4_1S are firs
 ### Key files
 
 - `ggml/src/ggml-turbo-quant.c` - the codec (keep byte-identical to fork tip)
-- `ggml/include/ggml.h` - type enum 43-47, `GGML_OP_TURBO_WHT`
+- `ggml/include/ggml.h` - type enum 44-48, `GGML_OP_TURBO_WHT`
 - `src/llama-kv-cache.cpp` - cache wiring, `get_k_idx`, layer-adaptive precision
 - `src/llama-graph.cpp` - inverse-WHT post-processing (FA and non-FA paths)
 - `ggml/src/ggml-cuda/mmvq-tq.cu` - native TQ dp4a kernels (`GGML_TQ_NATIVE=1`)
