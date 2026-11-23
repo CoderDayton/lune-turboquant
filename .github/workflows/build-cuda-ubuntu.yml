@@ -148,6 +148,7 @@ jobs:
           save: true
 
   musa:
+    if: github.repository == 'ggml-org/llama.cpp'
     runs-on: ubuntu-22.04
     container: registry.mthreads.com/mcconline/musa_sdk:5.2.0-devel-ubuntu22.04-s5000
 
