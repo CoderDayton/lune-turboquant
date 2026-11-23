@@ -82,7 +82,7 @@ jobs:
         id: matrices
         shell: bash
         env:
-          SKIP_S390X: ${{ inputs.skip_s390x || 'false' }}
+          SKIP_S390X: ${{ inputs.skip_s390x || github.repository != 'ggml-org/llama.cpp' }}
         run: |
           set -euo pipefail
 
