@@ -4,6 +4,21 @@ import sys
 from collections import defaultdict
 import re
 
+try:
+    from itanium_demangler import parse as demangle  # ty: ignore[import-not-found]
+except ImportError:
+    demangle = None
+
+
+def format_name(name):
+    if demangle is None:
+        return name
+    try:
+        demangled = demangle(name)
+    except Exception:
+        return name
+    return f"{name} [{demangled}]" if demangled is not None else name
+
 
 def parse_log_file(filepath):
     functions = defaultdict(lambda: {'vgprs': 0, 'spill': 0, 'location': ''})
@@ -59,93 +74,90 @@ def main():
 
     log_file = sys.argv[1]
     ignored = {
-        '_ZL21gated_linear_attn_f32ILi128EEviiiifPKfS1_S1_S1_S1_Pf',
         '_ZL13rwkv_wkv7_f32ILi128EEviiiiPKfS1_S1_S1_S1_S1_S1_Pf',
-        '_ZL12rwkv_wkv_f32ILi128EEviiiiPKfS1_S1_S1_S1_S1_Pf',
-        '_ZL9mul_mat_qIL9ggml_type10ELi64ELb1EEvPKcPKiS4_S4_PfS5_PKf15HIP_vector_typeIjLj3EEiiiiiS9_S9_iiiS9_S9_iiiS9_',
-        '_ZL9mul_mat_qIL9ggml_type42ELi128ELb1EEvPKcPKiS4_S4_PfS5_PKf15HIP_vector_typeIjLj3EEiiiiiS9_S9_iiiS9_S9_iiiS9_',
 
-        # TurboQuant fork: the same >= 512 DQK MMA kernels as above, mangled with the fork's K/V type
-        # template parameters, plus the fork's 640/512 tile
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi2ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi2ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi4ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi4ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi32ELi2ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi32ELi2ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi4ELi8ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi4ELi8ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi4ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi4ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi8ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi8ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi16ELi4ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi1ELi32ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi2ELi16ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi2ELi32ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi4ELi16ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi8ELi4ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi640ELi512ELi2ELi16ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi640ELi512ELi4ELi16ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi2ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi2ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi4ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi4ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi32ELi2ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi32ELi2ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi4ELi8ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi4ELi8ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi4ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi4ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi8ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi8ELb1ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi16ELi4ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi1ELi16ELb0ELb1ELb1EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi1ELi32ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi2ELi16ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi2ELi32ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi4ELi16ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi8ELi4ELb0ELb1ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi640ELi512ELi2ELi16ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi640ELi512ELi4ELi16ELb0ELb0ELb0EL9ggml_type1ELS0_1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
         # TurboQuant fork: turbo-K vec kernels (DQK 256, and the turbo-K x q8_0-V pairs at DQK 128)
-        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type44ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type44ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type48ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type48ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type47ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type47ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_1ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_44ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_44ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_48ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_48ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_47ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_47ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_1ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_44ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_44ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_48ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_48ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_47ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_47ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_1ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_44ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_44ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_48ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_48ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_47ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_47ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type44ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type44ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type48ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type48ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type47ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi128ELi2EL9ggml_type47ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_1ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_44ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_44ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_48ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_48ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_47ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_47ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type44ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_1ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_44ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_44ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_48ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_48ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_47ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_47ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type48ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_1ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_1ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_44ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_44ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_48ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_48ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_47ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_47ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_8ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi2EL9ggml_type47ELS0_8ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
 
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi2ELi32ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi4ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi4ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi32ELi2ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi32ELi2ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi8ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi8ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi16ELi4ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi4ELi16ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi2ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi2ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi4ELi8ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi4ELi8ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi4ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi4ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi1ELi32ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi2ELi16ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi8ELi4ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type2ELS0_2ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi320ELi256ELi2ELi32ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
-        '_ZL18flash_attn_ext_f16ILi576ELi512ELi1ELi16ELb0ELb1ELb1EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiiil',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi2ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi2ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi4ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi16ELi4ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi32ELi2ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi32ELi2ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi4ELi8ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi4ELi8ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi4ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi4ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi8ELb0ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi512ELi512ELi8ELi8ELb1ELb0ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi16ELi4ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi1ELi16ELb0ELb1ELb1EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi1ELi32ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi2ELi16ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi2ELi32ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi4ELi16ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_f16ILi576ELi512ELi8ELi4ELb0ELb1ELb0EEvPKcS1_S1_S1_S1_PKiS3_PfP15HIP_vector_typeIfLj2EEffffjfiS5_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type2ELS0_2ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type43ELS0_43ELb0EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL18flash_attn_ext_vecILi256ELi1EL9ggml_type43ELS0_43ELb1EEvPKcS2_S2_S2_S2_PKiS4_PfP15HIP_vector_typeIfLj2EEffffjfiS6_IjLj3EEiiiiiiiiiiiliiliiiill',
+        '_ZL21gated_linear_attn_f32ILi128EEviiiifPKfS1_S1_S1_S1_Pf',
 
     }
 
@@ -158,7 +170,7 @@ def main():
         total_vgprs = int(data['vgprs']) + int(data['spill'])
         if total_vgprs > 256 and func_name in ignored and func_name not in printed_ignored:
             location = data.get('location', log_file)
-            print(f"{location}: {func_name} - Total VGPRs: {total_vgprs} ({data['vgprs']} + {data['spill']}) [IGNORED]")  # noqa: NP100
+            print(f"{location}: {format_name(func_name)} - Total VGPRs: {total_vgprs} ({data['vgprs']} + {data['spill']}) [IGNORED]")  # noqa: NP100
             printed_ignored.add(func_name)
 
     # Then print new functions with issues in red
@@ -170,7 +182,7 @@ def main():
             # Print in red if not ignored
             color_code = "\033[91m" if func_name not in ignored else ""
             reset_code = "\033[0m" if func_name not in ignored else ""
-            print(f"{color_code}{location}: {func_name} - Total VGPRs: {total_vgprs} ({data['vgprs']} + {data['spill']}) {status}{reset_code}")  # noqa: NP100
+            print(f"{color_code}{location}: {format_name(func_name)} - Total VGPRs: {total_vgprs} ({data['vgprs']} + {data['spill']}) {status}{reset_code}")  # noqa: NP100
             if func_name not in ignored:
                 found_issues = True
 
