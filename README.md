@@ -15,7 +15,7 @@
 
 A fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that adds TurboQuant KV cache compression and WHT-rotated weight quantization.
 
-Synced with upstream `llama.cpp` as of `212c547fe` (2026-11-23).
+Synced with upstream `llama.cpp` as of `0ce7f213b` (2026-11-24).
 
 ## TurboQuant
 
